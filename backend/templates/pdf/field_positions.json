@@ -1,0 +1,74 @@
+{
+  "1": {
+    "page": 0,
+    "fields": {
+      "person_name": { "x": 72, "y": 130, "font_size": 11 },
+      "company_name": { "x": 72, "y": 148, "font_size": 11 },
+      "email": { "x": 72, "y": 166, "font_size": 10 },
+      "invoice_date": { "x": 400, "y": 130, "font_size": 10 },
+      "total_amount": { "x": 400, "y": 680, "font_size": 12 }
+    },
+    "tasks": {
+      "main_task": { "x": 72 },
+      "sub_task": { "x": 220 },
+      "amount": { "x": 460 },
+      "start_y": 320,
+      "row_height": 22,
+      "font_size": 10
+    }
+  },
+  "2": {
+    "page": 0,
+    "fields": {
+      "person_name": { "x": 72, "y": 130, "font_size": 11 },
+      "company_name": { "x": 72, "y": 148, "font_size": 11 },
+      "email": { "x": 72, "y": 166, "font_size": 10 },
+      "invoice_date": { "x": 400, "y": 130, "font_size": 10 },
+      "total_amount": { "x": 400, "y": 680, "font_size": 12 }
+    },
+    "tasks": {
+      "main_task": { "x": 72 },
+      "sub_task": { "x": 220 },
+      "amount": { "x": 460 },
+      "start_y": 320,
+      "row_height": 22,
+      "font_size": 10
+    }
+  },
+  "3": {
+    "page": 0,
+    "fields": {
+      "person_name": { "x": 72, "y": 130, "font_size": 11 },
+      "company_name": { "x": 72, "y": 148, "font_size": 11 },
+      "email": { "x": 72, "y": 166, "font_size": 10 },
+      "invoice_date": { "x": 400, "y": 130, "font_size": 10 },
+      "total_amount": { "x": 400, "y": 680, "font_size": 12 }
+    },
+    "tasks": {
+      "main_task": { "x": 72 },
+      "sub_task": { "x": 220 },
+      "amount": { "x": 460 },
+      "start_y": 320,
+      "row_height": 22,
+      "font_size": 10
+    }
+  },
+  "4": {
+    "page": 0,
+    "fields": {
+      "person_name": { "x": 72, "y": 130, "font_size": 11 },
+      "company_name": { "x": 72, "y": 148, "font_size": 11 },
+      "email": { "x": 72, "y": 166, "font_size": 10 },
+      "invoice_date": { "x": 400, "y": 130, "font_size": 10 },
+      "total_amount": { "x": 400, "y": 680, "font_size": 12 }
+    },
+    "tasks": {
+      "main_task": { "x": 72 },
+      "sub_task": { "x": 220 },
+      "amount": { "x": 460 },
+      "start_y": 320,
+      "row_height": 22,
+      "font_size": 10
+    }
+  }
+}

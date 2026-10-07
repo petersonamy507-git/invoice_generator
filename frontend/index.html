@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Invoice Generation System</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="page page-wide">
+    <header class="header">
+      <div class="header-row">
+        <div>
+          <h1>Invoice Generation System</h1>
+          <p>MySQL employees, club assignment, and Word/PDF invoice generation.</p>
+        </div>
+        <div class="header-actions">
+          <span id="current-user" class="current-user hidden"></span>
+          <button type="button" class="btn" id="btn-logout">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button type="button" class="tab active" data-tab="employees">Employees</button>
+      <button type="button" class="tab" data-tab="bulk">Excel Bulk</button>
+      <button type="button" class="tab" data-tab="templates">Word Templates</button>
+    </div>
+
+    <div id="error-box" class="error-box hidden" role="alert"></div>
+    <div id="success-box" class="success-box hidden" role="status"></div>
+
+    <section id="panel-employees" class="panel active">
+      <h2>Department Employees</h2>
+      <fieldset class="category-fieldset">
+        <legend>Department</legend>
+        <div class="category-buttons" id="dept-buttons">
+          <button type="button" class="category-btn" data-department="QA">QA</button>
+          <button type="button" class="category-btn" data-department="Devops">Devops</button>
+          <button type="button" class="category-btn" data-department="Call centre">Call centre</button>
+          <button type="button" class="category-btn" data-department="Account">Account</button>
+          <button type="button" class="category-btn" data-department="HR">HR</button>
+        </div>
+      </fieldset>
+
+      <div id="employee-workspace" class="employee-workspace hidden">
+        <div class="employee-toolbar">
+          <button type="button" class="btn" id="btn-new-employee">New Employee</button>
+          <button type="button" class="btn primary" id="btn-generate" disabled>Generate Selected</button>
+        </div>
+
+        <div id="new-employee-form" class="card form-card hidden">
+          <h3>New Employee</h3>
+          <div class="form-grid">
+            <label>Employee ID <input id="ne-id" required /></label>
+            <label>Name <input id="ne-name" required /></label>
+            <label>Department <input id="ne-department" readonly /></label>
+            <label>IBAN <input id="ne-iban" required /></label>
+            <label>Bank Name <input id="ne-bank" required /></label>
+            <label>Branch Code <input id="ne-branch" /></label>
+            <label>Last Invoice <input id="ne-last-invoice" placeholder="e.g. HH-007" /></label>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn primary" id="ne-done">Done</button>
+            <button type="button" class="btn" id="ne-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <div id="edit-employee-form" class="card form-card hidden">
+          <h3>Edit Employee</h3>
+          <input type="hidden" id="ee-id" />
+          <div class="form-grid">
+            <label>Name <input id="ee-name" required /></label>
+            <label>Department
+              <select id="ee-department">
+                <option>QA</option>
+                <option>Devops</option>
+                <option>Call centre</option>
+                <option>Account</option>
+                <option>HR</option>
+              </select>
+            </label>
+            <label>IBAN <input id="ee-iban" required /></label>
+            <label>Bank Name <input id="ee-bank" required /></label>
+            <label>Branch Code <input id="ee-branch" /></label>
+            <label>Last Invoice <input id="ee-last-invoice" placeholder="e.g. HH-007" /></label>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn primary" id="ee-save">Save</button>
+            <button type="button" class="btn" id="ee-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="employee-table" id="employee-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Employee ID</th>
+                <th>Name</th>
+                <th>Bank</th>
+                <th>IBAN</th>
+                <th>Branch</th>
+                <th>Last Invoice</th>
+                <th>Amount</th>
+                <th>Template</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="employee-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint">
+          Select employees, enter Amount and Template (1–14), then Generate.
+          <strong>Last Invoice</strong> is shown (editable). The PDF Invoice No. is
+          <strong>Last Invoice + 1</strong>, then saved back as the new Last Invoice.
+          Each employee gets one unique <strong>club_id</strong> from MySQL <code>clubing</code>
+          (department match + 3-month personal history + same-month global rule via
+          <code>invoice_backup</code>). The club's 3 items (separated by <code> | </code>)
+          become the invoice line items.
+        </p>
+      </div>
+    </section>
+
+    <section id="panel-bulk" class="panel">
+      <h2>Excel Bulk (legacy)</h2>
+      <form id="bulk-form" class="card">
+        <fieldset class="category-fieldset">
+          <legend>Category</legend>
+          <div class="category-buttons" id="category-buttons">
+            <button type="button" class="category-btn" data-category="qa">QA</button>
+            <button type="button" class="category-btn" data-category="devops">Devops</button>
+            <button type="button" class="category-btn" data-category="call_centre">Call centre</button>
+            <button type="button" class="category-btn" data-category="account">Account</button>
+            <button type="button" class="category-btn" data-category="hr">HR</button>
+          </div>
+          <input type="hidden" name="category" id="bulk-category" />
+          <ul id="category-status" class="template-status"></ul>
+        </fieldset>
+        <label class="file-label">
+          Current Month Invoice Sheet
+          <input type="file" name="current_month" accept=".xlsx,.xls" required />
+        </label>
+        <button type="submit" class="btn primary">Generate &amp; Download ZIP</button>
+      </form>
+    </section>
+
+    <section id="panel-templates" class="panel">
+      <h2>Invoice Templates</h2>
+      <p class="hint">Generation uses Word files in <code>Data/word/</code> (same format as your PDF samples). HTML previews live in <code>all_templates/</code>.</p>
+      <ul id="template-status" class="template-status"></ul>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
