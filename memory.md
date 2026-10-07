@@ -22,7 +22,7 @@ Bulk (and optional manual) invoice generation system:
 | API | FastAPI (`backend/app/main.py`) |
 | Excel | pandas + openpyxl |
 | Word fill | python-docx |
-| PDF | Microsoft Word COM (`pywin32`) — DOCX → PDF |
+| PDF | LibreOffice headless (`soffice`) — DOC/DOCX/HTML conversion and DOCX → PDF |
 | UI | Static `frontend/` (HTML/JS/CSS) |
 
 **Run (from project root `D:\Invoice_finance`):**
@@ -245,7 +245,7 @@ tests/                                        # category, assignment, layout tes
 | Category not ready | Confirm `ListOFservicesforInvoices_v.1.2.xlsx` exists and sheet names match |
 | Template not found | Confirm HTML under `all_templates/` matches `INVOICE_HTML_MAP` |
 | Not enough eligible tasks | Need ≥ 3 unused items per person after history + batch rules |
-| PDF fails | Microsoft Word + pywin32 required on Windows |
+| PDF fails | Install LibreOffice Writer and ensure `soffice` is on PATH; install template fonts |
 
 ---
 

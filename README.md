@@ -29,6 +29,8 @@ For local testing only, generate placeholder templates:
 
 ## Setup
 
+### Windows
+
 ```bash
 cd d:\Invoice_finance
 python -m venv .venv
@@ -36,10 +38,35 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+### Linux / Ubuntu
+
+Install LibreOffice Writer and the Python runtime before installing the app:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip libreoffice-writer
+cd /path/to/Invoice_finance
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+LibreOffice is used for HTML/DOC/DOCX conversions. Install the fonts used by the
+invoice templates on the server as well; missing fonts can change line wrapping,
+spacing, and pagination. Confirm a template font resolves with `fc-match`.
+
 ## Run
+
+Windows:
 
 ```bash
 .venv\Scripts\python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Linux / Ubuntu:
+
+```bash
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000)
