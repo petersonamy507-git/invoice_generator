@@ -38,13 +38,20 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Install LibreOffice Writer on the Windows machine that runs Uvicorn. If `soffice`
+is not on `PATH`, add its executable to `.env` and restart the backend:
+
+```dotenv
+SOFFICE_PATH="C:\\Program Files\\LibreOffice\\program\\soffice.exe"
+```
+
 ### Linux / Ubuntu
 
 Install LibreOffice Writer and the Python runtime before installing the app:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip libreoffice-writer
+sudo apt install -y python3 python3-venv python3-pip libreoffice-writer fontconfig fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-noto-core
 cd /path/to/Invoice_finance
 python3 -m venv .venv
 source .venv/bin/activate
@@ -54,6 +61,27 @@ pip install -r requirements.txt
 LibreOffice is used for HTML/DOC/DOCX conversions. Install the fonts used by the
 invoice templates on the server as well; missing fonts can change line wrapping,
 spacing, and pagination. Confirm a template font resolves with `fc-match`.
+
+### Docker deployment
+
+The included `Dockerfile` installs LibreOffice Writer and font substitutes in
+the runtime image. Build and run it with:
+
+```bash
+docker build -t invoice-finance .
+docker run --rm -p 8000:8000 --env-file .env invoice-finance
+```
+
+Configure `DB_HOST`, `DB_USER`, `DB_PASSWORD`, and `DB_NAME` for a MySQL server
+reachable from the container. `127.0.0.1` inside the container is the container
+itself, not the host or a separate database server. Keep `.env` and SQL data
+dumps out of the image and Git repository.
+
+The included Linux font packages provide compatible substitutes, not Microsoft's
+exact Arial/Calibri/Cambria/Georgia/Tahoma/Trebuchet fonts. Install the exact
+licensed fonts used by the templates for closer layout fidelity. LibreOffice can
+still differ slightly from Microsoft Word; verify generated PDFs against the
+reference PDFs before production use.
 
 ## Run
 
