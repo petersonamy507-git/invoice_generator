@@ -105,6 +105,26 @@ export function LockIcon(props: IconProps) {
   )
 }
 
+export function EyeIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  )
+}
+
+export function EyeOffIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.6a2.5 2.5 0 0 0 3.5 3.5" />
+      <path d="M9.4 5.3A10.4 10.4 0 0 1 12 5c6 0 9.5 6 9.5 6a16.4 16.4 0 0 1-3.2 3.7" />
+      <path d="M6.1 6.1A16.7 16.7 0 0 0 2.5 12S6 18 12 18a10 10 0 0 0 4.2-.9" />
+    </svg>
+  )
+}
+
 export function UserIcon(props: IconProps) {
   return (
     <svg {...base(props)}>

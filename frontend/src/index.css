@@ -818,6 +818,24 @@ tbody tr.is-selected { background: var(--row); }
 .field-icon, .field-prefix { color: var(--muted); display: inline-flex; }
 .field-icon svg { width: 16px; height: 16px; }
 .field-prefix { font-weight: 700; color: var(--accent-text); font-size: 13px; }
+.field-control.has-reveal { padding-right: 4px; }
+.field-reveal {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.field-reveal:hover { color: var(--accent-text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.field-reveal svg { width: 18px; height: 18px; }
 .form-error { color: var(--danger); font-size: 13px; margin-top: 10px; }
 .modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
 .employee-form { display: block; }
