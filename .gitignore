@@ -1,6 +1,8 @@
 .venv/
 .env
+.env.local
 __pycache__/
 *.pyc
 Data/word/output/
 *.zip
+node_modules/
