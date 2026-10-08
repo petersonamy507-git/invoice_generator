@@ -235,21 +235,68 @@ export const auth = {
   logout: () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
 };
 
+/** Team portal logins (MySQL `users`). Admin-only except login/me. */
+export const teamUsers = {
+  list: () => api<{ users: User[] }>("/api/users"),
+  create: (body: UserCreate) =>
+    api<User>("/api/users", { method: "POST", body: JSON.stringify(body) }),
+  update: (id: number, body: UserUpdate) =>
+    api<User>(`/api/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  setPassword: (id: number, password: string, confirm_password: string) =>
+    api<{ id: number; password_updated: boolean }>(`/api/users/${id}/password`, {
+      method: "POST",
+      body: JSON.stringify({ password, confirm_password }),
+    }),
+  remove: (id: number) =>
+    api<{ id: number; deleted: boolean }>(`/api/users/${id}`, { method: "DELETE" }),
+};
+
 export type User = {
   id: number;
   username: string;
   email: string;
   role: "admin" | "user";
   is_active: boolean;
+  last_login?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type UserCreate = {
+  username: string;
+  email: string;
+  password: string;
+  confirm_password: string;
+  role?: "admin" | "user"; // default "user"
+  is_active?: boolean; // default true
+};
+
+export type UserUpdate = {
+  username?: string;
+  email?: string;
+  role?: "admin" | "user";
+  is_active?: boolean;
 };
 ```
 
 ### 2.5 Example usage
 
 ```ts
-import { api, auth } from "./api/client";
+import { api, auth, teamUsers } from "./api/client";
 
 await auth.login("admin", "Admin@12345");
+
+// Add a teammate who can log in to the portal (saved in MySQL users)
+await teamUsers.create({
+  username: "mansoor",
+  email: "mansoor@company.com",
+  password: "TeamPass123",
+  confirm_password: "TeamPass123",
+  role: "user",
+  is_active: true,
+});
+const { users } = await teamUsers.list();
+
 const { employees } = await api<{ employees: unknown[] }>("/api/employees?department=QA");
 
 // Download invoice ZIP
@@ -327,15 +374,20 @@ All paths are under `{BASE_URL}`. Auth = cookie required unless noted.
 | POST | `/api/auth/logout` | Clears cookie |
 | GET | `/api/auth/me` | `{ authenticated, user }` |
 
-### Users (admin)
+### Team logins / users (admin only)
 
-| Method | Path | Body |
-|--------|------|------|
-| GET | `/api/users` | |
-| POST | `/api/users` | `{ username, email, password, confirm_password, role, is_active }` |
-| PUT | `/api/users/{id}` | `{ username, email, role, is_active }` |
-| POST | `/api/users/{id}/password` | `{ password, confirm_password }` |
-| DELETE | `/api/users/{id}` | |
+Portal login accounts live in MySQL **`users`**.  
+This is **not** the Employees list (invoice people with IBAN). Only **`role: "admin"`** can call these.
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/users` | admin | List all team logins |
+| POST | `/api/users` | admin | **Add team login** (create user) |
+| PUT | `/api/users/{id}` | admin | Update username / email / role / active |
+| POST | `/api/users/{id}/password` | admin | Reset password |
+| DELETE | `/api/users/{id}` | admin | Delete login |
+
+See **§4.1** below for full request/response bodies and Vite examples.
 
 ### Departments / employees
 
@@ -348,6 +400,143 @@ All paths are under `{BASE_URL}`. Auth = cookie required unless noted.
 | PUT | `/api/employees/{employee_id}` | Partial update fields |
 | DELETE | `/api/employees/{employee_id}` | Hard delete |
 | POST | `/api/employees/generate` | See below → **ZIP of PDFs** |
+
+### 4.1 Team login API (send this to Vite frontend)
+
+**Important**
+
+- Cookie session required (`credentials: "include"`).
+- Caller must be logged in as **admin** (else `403`).
+- Password min length: **8**. `password` and `confirm_password` must match.
+- `role`: `"admin"` \| `"user"` (default `"user"`).
+- Teammates log in with `POST /api/auth/login` using `username` **or** `email` as `identifier`.
+
+#### Add team login — `POST /api/users`
+
+Request:
+
+```json
+{
+  "username": "mansoor",
+  "email": "mansoor@company.com",
+  "password": "TeamPass123",
+  "confirm_password": "TeamPass123",
+  "role": "user",
+  "is_active": true
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `username` | string | yes | Unique |
+| `email` | string | yes | Unique, must contain `@` |
+| `password` | string | yes | ≥ 8 chars |
+| `confirm_password` | string | yes | Must equal `password` |
+| `role` | `"admin"` \| `"user"` | no | Default `"user"` |
+| `is_active` | boolean | no | Default `true` |
+
+Response `200` (also shape of each user in list):
+
+```json
+{
+  "id": 9,
+  "username": "mansoor",
+  "email": "mansoor@company.com",
+  "role": "user",
+  "is_active": true,
+  "last_login": null,
+  "created_at": "2026-10-09 03:00:00",
+  "updated_at": "2026-10-09 03:00:00"
+}
+```
+
+Errors: `400` validation / duplicate username or email; `401` not logged in; `403` not admin.
+
+#### List — `GET /api/users`
+
+```json
+{ "users": [ /* User objects */ ] }
+```
+
+#### Update — `PUT /api/users/{id}`
+
+```json
+{
+  "username": "mansoor",
+  "email": "mansoor@company.com",
+  "role": "user",
+  "is_active": true
+}
+```
+
+All fields optional; omit unchanged ones.
+
+#### Reset password — `POST /api/users/{id}/password`
+
+```json
+{
+  "password": "NewPass123",
+  "confirm_password": "NewPass123"
+}
+```
+
+Response: `{ "id": 9, "password_updated": true }`
+
+#### Delete — `DELETE /api/users/{id}`
+
+Response: `{ "id": 9, "deleted": true }`
+
+#### curl examples
+
+```bash
+export BASE_URL="http://127.0.0.1:8000"
+
+# 1) Admin login (saves cookie)
+curl -s -c cookies.txt -X POST "$BASE_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"identifier\":\"admin\",\"password\":\"Admin@12345\"}"
+
+# 2) Add team login
+curl -s -b cookies.txt -X POST "$BASE_URL/api/users" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"jane\",\"email\":\"jane@company.com\",\"password\":\"UserPass123\",\"confirm_password\":\"UserPass123\",\"role\":\"user\",\"is_active\":true}"
+
+# 3) List team
+curl -s -b cookies.txt "$BASE_URL/api/users"
+
+# 4) Teammate login (their own session)
+curl -s -c team.txt -X POST "$BASE_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"identifier\":\"jane\",\"password\":\"UserPass123\"}"
+```
+
+#### Vite / fetch example
+
+```ts
+// After admin login:
+await fetch(`${BASE}/api/users`, {
+  method: "POST",
+  credentials: "include",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    username: "jane",
+    email: "jane@company.com",
+    password: "UserPass123",
+    confirm_password: "UserPass123",
+    role: "user",
+    is_active: true,
+  }),
+});
+
+const res = await fetch(`${BASE}/api/users`, { credentials: "include" });
+const { users } = await res.json();
+```
+
+Or use `teamUsers` from §2.4.
+
+**UI hint:** Show “Team Logins” / “Add user” only when `user.role === "admin"`.
+
+---
 
 **Generate invoices**
 
@@ -449,8 +638,9 @@ Full template list for UI dropdowns: see **`TEMPLATES.md`** (same folder / Deskt
 3. From that PC, confirm: `curl http://10.100.4.15:8000/api/health`
 4. Use the `api()` helper with `credentials: "include"`
 5. Login → `/api/auth/me` on boot → redirect to login on `401`
-6. ZIP/PDF downloads: treat response as `Blob`
-7. Optional: types from `http://10.100.4.15:8000/openapi.json`
+6. Admin UI: Team Logins via `GET/POST /api/users` (see §4.1) — only if `role === "admin"`
+7. ZIP/PDF downloads: treat response as `Blob`
+8. Optional: types from `http://10.100.4.15:8000/openapi.json`
 
 ### Quick troubleshooting
 

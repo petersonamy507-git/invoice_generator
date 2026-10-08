@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Invoice Generation System</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=users2" />
 </head>
 <body>
   <div class="page page-wide">
@@ -25,6 +25,7 @@
       <button type="button" class="tab active" data-tab="employees">Employees</button>
       <button type="button" class="tab" data-tab="bulk">Excel Bulk</button>
       <button type="button" class="tab" data-tab="templates">Word Templates</button>
+      <button type="button" class="tab" data-tab="users" id="tab-users">Team Logins</button>
     </div>
 
     <div id="error-box" class="error-box hidden" role="alert"></div>
@@ -150,7 +151,89 @@
       <p class="hint">Generation uses Word files in <code>Data/word/</code> (same format as your PDF samples). HTML previews live in <code>all_templates/</code>.</p>
       <ul id="template-status" class="template-status"></ul>
     </section>
+
+    <section id="panel-users" class="panel">
+      <h2>Team Logins</h2>
+      <p class="hint">
+        Add teammates who can log in to this portal. Each account is saved in MySQL
+        <code>users</code> (this is not the Employees invoice list).
+      </p>
+      <div class="employee-toolbar">
+        <button type="button" class="btn primary" id="btn-new-user">Add Team Login</button>
+        <button type="button" class="btn" id="btn-refresh-users">Refresh</button>
+      </div>
+
+      <div id="new-user-form" class="card form-card">
+        <h3>New Team Login</h3>
+        <div class="form-grid">
+          <label>Username <input id="nu-username" required autocomplete="off" /></label>
+          <label>Email <input id="nu-email" type="email" required autocomplete="off" /></label>
+          <label>Password <input id="nu-password" type="password" required minlength="8" autocomplete="new-password" /></label>
+          <label>Confirm Password <input id="nu-confirm" type="password" required minlength="8" autocomplete="new-password" /></label>
+          <label>Role
+            <select id="nu-role">
+              <option value="user" selected>user</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+          <label>Active
+            <select id="nu-active">
+              <option value="true" selected>Yes</option>
+              <option value="false">No</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn primary" id="nu-save">Save to users table</button>
+          <button type="button" class="btn" id="nu-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div id="edit-user-form" class="card form-card hidden">
+        <h3>Edit Team Login</h3>
+        <input type="hidden" id="eu-id" />
+        <div class="form-grid">
+          <label>Username <input id="eu-username" required /></label>
+          <label>Email <input id="eu-email" type="email" required /></label>
+          <label>Role
+            <select id="eu-role">
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+          </label>
+          <label>Active
+            <select id="eu-active">
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </label>
+          <label>New Password <input id="eu-password" type="password" minlength="8" placeholder="Leave blank to keep" autocomplete="new-password" /></label>
+          <label>Confirm Password <input id="eu-confirm" type="password" minlength="8" autocomplete="new-password" /></label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn primary" id="eu-save">Save</button>
+          <button type="button" class="btn" id="eu-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="employee-table" id="users-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Username</th>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Active</th>
+              <th>Last Login</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
+    </section>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=users2"></script>
 </body>
 </html>

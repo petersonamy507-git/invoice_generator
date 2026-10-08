@@ -3,6 +3,7 @@ const panels = {
   employees: document.getElementById("panel-employees"),
   bulk: document.getElementById("panel-bulk"),
   templates: document.getElementById("panel-templates"),
+  users: document.getElementById("panel-users"),
 };
 const errorBox = document.getElementById("error-box");
 const successBox = document.getElementById("success-box");
@@ -50,14 +51,23 @@ document.getElementById("btn-logout")?.addEventListener("click", async () => {
 
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => {
+    const key = tab.dataset.tab;
+    const panel = panels[key] || document.getElementById(`panel-${key}`);
+    if (!panel) return;
     tabs.forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     Object.values(panels).forEach((p) => p && p.classList.remove("active"));
-    panels[tab.dataset.tab].classList.add("active");
+    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+    panel.classList.add("active");
     hideError();
     hideSuccess();
-    if (tab.dataset.tab === "templates") loadWordTemplateStatus();
-    if (tab.dataset.tab === "bulk") loadCategoryStatus();
+    if (key === "templates") loadWordTemplateStatus();
+    if (key === "bulk") loadCategoryStatus();
+    if (key === "users") {
+      hideUserForms();
+      document.getElementById("new-user-form")?.classList.remove("hidden");
+      loadUsers();
+    }
   });
 });
 
@@ -456,8 +466,222 @@ btnGenerate.addEventListener("click", async () => {
   }
 });
 
+/* -------- Team logins (admin → MySQL users) -------- */
+const newUserForm = document.getElementById("new-user-form");
+const editUserForm = document.getElementById("edit-user-form");
+const usersTbody = document.getElementById("users-tbody");
+
+function isAdmin() {
+  return currentUser && currentUser.role === "admin";
+}
+
+function showUsersTabIfAdmin() {
+  const tab = document.getElementById("tab-users");
+  if (!tab) return;
+  if (isAdmin()) {
+    tab.classList.remove("hidden");
+    tab.style.display = "";
+  } else {
+    tab.classList.add("hidden");
+    tab.style.display = "none";
+    if (panels.users?.classList.contains("active")) {
+      document.querySelector('.tab[data-tab="employees"]')?.click();
+    }
+  }
+}
+
+function hideUserForms() {
+  newUserForm?.classList.add("hidden");
+  editUserForm?.classList.add("hidden");
+}
+
+async function loadUsers() {
+  if (!isAdmin() || !usersTbody) return;
+  try {
+    const data = await apiJson("/api/users");
+    const users = data?.users || [];
+    usersTbody.innerHTML = "";
+    if (!users.length) {
+      usersTbody.innerHTML =
+        '<tr><td colspan="7">No team logins yet. Click Add Team Login.</td></tr>';
+      return;
+    }
+    users.forEach((u) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${u.id}</td>
+        <td>${escapeHtml(u.username)}</td>
+        <td>${escapeHtml(u.email)}</td>
+        <td>${escapeHtml(u.role)}</td>
+        <td>${u.is_active ? "Yes" : "No"}</td>
+        <td>${escapeHtml(u.last_login || "—")}</td>
+        <td>
+          <button type="button" class="btn small" data-edit-user="${u.id}">Edit</button>
+          <button type="button" class="btn small danger" data-del-user="${u.id}" ${
+            currentUser && currentUser.id === u.id ? "disabled title=\"Cannot delete yourself\"" : ""
+          }>Delete</button>
+        </td>
+      `;
+      usersTbody.appendChild(tr);
+    });
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+document.getElementById("btn-new-user")?.addEventListener("click", () => {
+  hideUserForms();
+  ["nu-username", "nu-email", "nu-password", "nu-confirm"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+  const role = document.getElementById("nu-role");
+  const active = document.getElementById("nu-active");
+  if (role) role.value = "user";
+  if (active) active.value = "true";
+  newUserForm?.classList.remove("hidden");
+});
+
+document.getElementById("btn-refresh-users")?.addEventListener("click", () => {
+  hideError();
+  hideSuccess();
+  loadUsers();
+});
+
+document.getElementById("nu-cancel")?.addEventListener("click", () => {
+  hideUserForms();
+});
+
+document.getElementById("nu-save")?.addEventListener("click", async () => {
+  const username = document.getElementById("nu-username")?.value.trim() || "";
+  const email = document.getElementById("nu-email")?.value.trim() || "";
+  const password = document.getElementById("nu-password")?.value || "";
+  const confirm = document.getElementById("nu-confirm")?.value || "";
+  const role = document.getElementById("nu-role")?.value || "user";
+  const is_active = document.getElementById("nu-active")?.value === "true";
+  if (!username || !email || !password) {
+    showError("Username, email, and password are required.");
+    return;
+  }
+  if (password !== confirm) {
+    showError("Passwords do not match.");
+    return;
+  }
+  if (password.length < 8) {
+    showError("Password must be at least 8 characters.");
+    return;
+  }
+  try {
+    const user = await apiJson("/api/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        email,
+        password,
+        confirm_password: confirm,
+        role,
+        is_active,
+      }),
+    });
+    hideUserForms();
+    showSuccess(`Saved ${user.username} to users table (id ${user.id}).`);
+    await loadUsers();
+  } catch (err) {
+    showError(err.message);
+  }
+});
+
+document.getElementById("eu-cancel")?.addEventListener("click", () => {
+  hideUserForms();
+});
+
+document.getElementById("eu-save")?.addEventListener("click", async () => {
+  const id = Number(document.getElementById("eu-id")?.value || 0);
+  const username = document.getElementById("eu-username")?.value.trim() || "";
+  const email = document.getElementById("eu-email")?.value.trim() || "";
+  const role = document.getElementById("eu-role")?.value || "user";
+  const is_active = document.getElementById("eu-active")?.value === "true";
+  const password = document.getElementById("eu-password")?.value || "";
+  const confirm = document.getElementById("eu-confirm")?.value || "";
+  if (!id || !username || !email) {
+    showError("Username and email are required.");
+    return;
+  }
+  if (password || confirm) {
+    if (password !== confirm) {
+      showError("Passwords do not match.");
+      return;
+    }
+    if (password.length < 8) {
+      showError("Password must be at least 8 characters.");
+      return;
+    }
+  }
+  try {
+    await apiJson(`/api/users/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({ username, email, role, is_active }),
+    });
+    if (password) {
+      await apiJson(`/api/users/${id}/password`, {
+        method: "POST",
+        body: JSON.stringify({ password, confirm_password: confirm }),
+      });
+    }
+    hideUserForms();
+    showSuccess(`Updated ${username} in users table.`);
+    await loadUsers();
+  } catch (err) {
+    showError(err.message);
+  }
+});
+
+usersTbody?.addEventListener("click", async (ev) => {
+  const editBtn = ev.target.closest("[data-edit-user]");
+  const delBtn = ev.target.closest("[data-del-user]");
+  if (editBtn) {
+    const id = Number(editBtn.dataset.editUser);
+    try {
+      const data = await apiJson("/api/users");
+      const user = (data?.users || []).find((u) => u.id === id);
+      if (!user) {
+        showError("User not found.");
+        return;
+      }
+      hideUserForms();
+      document.getElementById("eu-id").value = String(user.id);
+      document.getElementById("eu-username").value = user.username;
+      document.getElementById("eu-email").value = user.email;
+      document.getElementById("eu-role").value = user.role;
+      document.getElementById("eu-active").value = user.is_active ? "true" : "false";
+      document.getElementById("eu-password").value = "";
+      document.getElementById("eu-confirm").value = "";
+      editUserForm?.classList.remove("hidden");
+    } catch (err) {
+      showError(err.message);
+    }
+    return;
+  }
+  if (delBtn) {
+    const id = Number(delBtn.dataset.delUser);
+    if (!id || (currentUser && currentUser.id === id)) return;
+    if (!confirm(`Delete login user #${id}? They will no longer be able to sign in.`)) {
+      return;
+    }
+    try {
+      await apiJson(`/api/users/${id}`, { method: "DELETE" });
+      showSuccess(`Deleted user #${id} from users table.`);
+      hideUserForms();
+      await loadUsers();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+});
+
 ensureAuth().then((user) => {
   if (!user) return;
+  showUsersTabIfAdmin();
   loadWordTemplateStatus();
   loadCategoryStatus();
 });
