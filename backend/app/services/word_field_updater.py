@@ -33,8 +33,29 @@ INVOICE_NO_IN_TEXT = re.compile(r"(?i)(Invoice No\.?\s*:)\s*[^\n\r]*")
 TOTAL_AMOUNT_PATTERN = re.compile(r"(\$[\d,]+(?:\.\d{2})?)")
 
 
-def format_amount(amount: int) -> str:
-    return f"${amount:,}"
+def format_amount(
+    amount: int,
+    *,
+    cents: bool = False,
+    compact: bool | None = None,
+) -> str:
+    """
+    Format money for invoice templates.
+
+    Amounts >= 1000 omit thousands separators by default so narrow TOTAL /
+    amount cells do not wrap or push a second PDF page
+    (e.g. $1500 / $1500.00 instead of $1,500 / $1,500.00).
+    Pass compact=False to force comma grouping.
+    """
+    value = int(amount)
+    if compact is None:
+        compact = abs(value) >= 1_000
+    if cents:
+        # Very large + cents overflows narrow TOTAL cells ($250000.00 → wrap).
+        if compact and abs(value) >= 10_000:
+            return f"${value}"
+        return f"${value:.2f}" if compact else f"${value:,.2f}"
+    return f"${value}" if compact else f"${value:,}"
 
 
 def _rebuild_bank_account_block(text: str, data: WordInvoiceData) -> str | None:

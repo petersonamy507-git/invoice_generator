@@ -61,20 +61,33 @@ def output_filename(data: WordInvoiceData) -> str:
 
 def generate_word_invoice(data: WordInvoiceData) -> tuple[bytes, str]:
     """
-    Fill the original Word invoice template (Data/word/) so PDF export
-    matches your Word→PDF format (Tahoma/Georgia/etc., tables, logos).
+    Fill the original Word invoice template (Data/word/).
+
+    Templates 6–14 on Windows use Microsoft Word COM so original DOCX layout
+    (shapes, headers, 1-page PDF) matches the sample formats. Templates 1–5 use
+    python-docx field updates (drawings stay intact for those files).
     """
+    import sys
+
     if not data.tasks or len(data.tasks) < 3:
         raise ValidationError(
             "Invoice must have 3 assigned tasks before generating."
         )
+    ensure_template_exists(data.invoice_number)
+    filename = output_filename(data)
+
+    if sys.platform.startswith("win") and data.invoice_number >= 6:
+        from backend.app.services.word_com_fill import generate_docx_bytes_via_word_com
+
+        return generate_docx_bytes_via_word_com(data), filename
+
     source = ensure_template_exists(data.invoice_number)
     doc, temp_path = open_template_document(source)
     try:
         update_invoice_fields(doc, data)
         buffer = BytesIO()
         doc.save(buffer)
-        return buffer.getvalue(), output_filename(data)
+        return buffer.getvalue(), filename
     finally:
         if temp_path and temp_path.exists():
             shutil.rmtree(temp_path.parent, ignore_errors=True)
