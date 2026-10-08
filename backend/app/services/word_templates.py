@@ -22,6 +22,24 @@ INVOICE_WORD_MAP = {
     14: "Invoice14-SynergoInc",
 }
 
+# Short labels for frontend dropdowns
+INVOICE_TEMPLATE_LABELS = {
+    1: "MAXIS",
+    2: "Forest Tech",
+    3: "Radnor Innovations",
+    4: "App Founders",
+    5: "Dynamo Creatives",
+    6: "Ravotek",
+    7: "Ignitai",
+    8: "Coretechify",
+    9: "Ecomify",
+    10: "Cozy Home Essentials",
+    11: "Beecodify",
+    12: "Bravix Technologies",
+    13: "Alpha Digital",
+    14: "Synergo",
+}
+
 MAX_INVOICE_TEMPLATE = max(INVOICE_WORD_MAP)
 
 

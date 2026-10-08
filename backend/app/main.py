@@ -44,6 +44,7 @@ from backend.app.services.word_invoice_generator import (
     parse_manual_word_invoice,
 )
 from backend.app.services.word_templates import (
+    INVOICE_TEMPLATE_LABELS,
     INVOICE_WORD_MAP,
     WORD_DIR,
     template_filename,
@@ -389,6 +390,8 @@ async def word_templates_status(_user: RequireUser):
         "templates": {
             str(n): {
                 "id": n,
+                "label": INVOICE_TEMPLATE_LABELS.get(n, INVOICE_WORD_MAP[n]),
+                "name": INVOICE_WORD_MAP[n],
                 "filename": template_filename(n),
                 "exists": template_path(n).is_file(),
             }

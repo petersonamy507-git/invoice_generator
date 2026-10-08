@@ -63,9 +63,10 @@ def generate_word_invoice(data: WordInvoiceData) -> tuple[bytes, str]:
     """
     Fill the original Word invoice template (Data/word/).
 
-    Templates 6–14 on Windows use Microsoft Word COM so original DOCX layout
-    (shapes, headers, 1-page PDF) matches the sample formats. Templates 1–5 use
-    python-docx field updates (drawings stay intact for those files).
+    Templates 6–14:
+      - Windows: Microsoft Word COM (best fidelity)
+      - Linux/AWS: OOXML zip edit (keeps DrawingML; python-docx would strip it)
+    Templates 1–5: python-docx field updates.
     """
     import sys
 
@@ -76,10 +77,16 @@ def generate_word_invoice(data: WordInvoiceData) -> tuple[bytes, str]:
     ensure_template_exists(data.invoice_number)
     filename = output_filename(data)
 
-    if sys.platform.startswith("win") and data.invoice_number >= 6:
-        from backend.app.services.word_com_fill import generate_docx_bytes_via_word_com
+    if data.invoice_number >= 6:
+        if sys.platform.startswith("win"):
+            from backend.app.services.word_com_fill import (
+                generate_docx_bytes_via_word_com,
+            )
 
-        return generate_docx_bytes_via_word_com(data), filename
+            return generate_docx_bytes_via_word_com(data), filename
+        from backend.app.services.word_ooxml_fill import generate_docx_bytes_via_ooxml
+
+        return generate_docx_bytes_via_ooxml(data), filename
 
     source = ensure_template_exists(data.invoice_number)
     doc, temp_path = open_template_document(source)

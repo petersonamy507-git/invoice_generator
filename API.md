@@ -1,97 +1,170 @@
-# Invoice Finance API — shareable for any client (Vite, curl, etc.)
+# Invoice Finance API — backend on one PC, frontend on another
 
-Copy this file to another machine or repo. Point the client at your API host via `BASE_URL` / `VITE_API_BASE_URL`.
+**Setup this project uses:**
 
-| Environment | Example base URL |
-|-------------|------------------|
-| Same PC as API | `http://127.0.0.1:8000` |
-| Another PC on LAN | `http://192.168.x.x:8000` |
-| Deployed | `https://api.your-domain.com` |
+| Role | Where it runs | What to share |
+|------|----------------|---------------|
+| **Backend (API)** | This PC (Invoice_finance + MySQL + Word/LibreOffice) | LAN URL, e.g. `http://10.100.4.15:8000` |
+| **Frontend (Vite)** | Another system / another repo | Calls that API URL only — no backend install needed |
 
-Interactive Swagger (when API is up): `{BASE_URL}/docs`  
+Copy this `API.md` to the frontend machine/repo. The frontend never needs the Python project — only the API base URL.
+
+| Who | Base URL to use |
+|-----|-----------------|
+| Browser / Vite on **this** PC | `http://127.0.0.1:8000` |
+| Vite / browser on **another** PC (same LAN) | `http://<THIS-PC-LAN-IP>:8000` (example: `http://10.100.4.15:8000`) |
+| Deployed server | `https://api.your-domain.com` |
+
+Find this PC’s LAN IP (API host):
+
+```powershell
+# Windows (API PC)
+ipconfig
+# use IPv4 Address of Ethernet / Wi-Fi (not 127.0.0.1)
+```
+
+```bash
+# macOS / Linux (API PC)
+ip addr   # or: hostname -I
+```
+
+Interactive Swagger: `{BASE_URL}/docs`  
 OpenAPI JSON: `{BASE_URL}/openapi.json`
 
 ---
 
-## 1. Run API so other systems can reach it
+## 1. API host (this PC) — run so other systems can connect
 
-On the **API host** (project root):
+On the **backend PC** (project root):
 
 ```bash
+# IMPORTANT: 0.0.0.0 = listen on LAN (not only localhost)
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-- `--host 0.0.0.0` allows LAN access (not only localhost)
-- Share `http://<API-LAN-IP>:8000` as the base URL
-- Allow port `8000` in the host firewall if needed
-- Configure MySQL + `.env` on the API host
+Checklist on this PC:
 
-Health check:
+1. MySQL + `.env` configured
+2. Server started with `--host 0.0.0.0 --port 8000`
+3. Windows Firewall allows inbound **TCP 8000** (Private network)
+4. Tell the frontend team: `http://<YOUR-LAN-IP>:8000`  
+   Example right now: `http://10.100.4.15:8000`
+
+Health check **on this PC**:
 
 ```bash
 curl -s "http://127.0.0.1:8000/api/health"
 # {"status":"ok","service":"invoice-generation","version":"1.2.0"}
 ```
 
-### 1.1 PDF on AWS / Linux (required)
-
-Microsoft Word + `pywin32` work **only on Windows**. On AWS/Linux the API converts DOCX→PDF with **LibreOffice**.
+Health check **from the other PC** (must work before frontend will):
 
 ```bash
-# Ubuntu / Debian (EC2, etc.)
+curl -s "http://10.100.4.15:8000/api/health"
+# same JSON — if this fails, fix firewall / IP / uvicorn host
+```
+
+Windows Firewall (API PC, PowerShell as Admin) if LAN cannot connect:
+
+```powershell
+New-NetFirewallRule -DisplayName "Invoice Finance API 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private
+```
+
+### 1.1 Live server (AWS / Linux) — required setup
+
+Microsoft Word / `pywin32` are **Windows-only**. On live Linux the API now:
+
+1. **Fills** templates 6–14 via **OOXML** (edits the `.docx` zip so header drawings stay)  
+2. **Converts** DOCX→PDF with **LibreOffice**
+
+```bash
+# Ubuntu / Debian (EC2)
 sudo apt-get update
 sudo apt-get install -y libreoffice-writer
+pip install -r requirements.txt   # includes lxml
 
 # Confirm
 which soffice || which libreoffice
 soffice --version
 ```
 
-Optional in API host `.env` if `soffice` is not on `PATH`:
+Optional in API `.env`:
 
 ```env
 SOFFICE_PATH=/usr/bin/soffice
 ```
 
-Then restart uvicorn. Without LibreOffice, generate endpoints return:  
-`PDF export needs LibreOffice on this server...`
+Deploy checklist:
 
-| Host | DOCX fill | PDF |
-|------|-----------|-----|
-| Windows (dev) | python-docx / Word | Word COM, else LibreOffice |
-| AWS Linux | python-docx | LibreOffice headless |
+1. Pull latest code (includes `word_ooxml_fill.py`)
+2. Upload full `Data/word/` templates
+3. Install LibreOffice + restart uvicorn
+4. Test: `POST /api/employees/generate` with `invoice_template: 11`
+
+| Host | DOCX fill (6–14) | PDF |
+|------|------------------|-----|
+| Windows (local) | Microsoft Word COM | Word COM |
+| AWS Linux (live) | OOXML zip edit (keeps drawings) | LibreOffice headless |
 
 ---
 
-## 2. Vite frontend on another system (recommended)
+## 2. Frontend on another system (Vite) — call this PC’s API
 
-### 2.1 Env
+Frontend PC only needs Node/Vite. It talks to the backend PC over the network.
+
+Replace `10.100.4.15` below with **this backend PC’s real LAN IP**.
+
+### 2.1 Env on the frontend PC
 
 In the Vite project root, create `.env` / `.env.local`:
 
 ```env
-# Direct calls to API (cross-origin). Must be listed in API CORS_ORIGINS.
-VITE_API_BASE_URL=http://127.0.0.1:8000
-
-# Or leave empty and use the Vite proxy below (same-origin /api → backend).
-# VITE_API_BASE_URL=
+# Backend runs on the OTHER PC — use that machine's LAN IP (not 127.0.0.1)
+VITE_API_BASE_URL=http://10.100.4.15:8000
 ```
 
-### 2.2 Option A — Vite proxy (simplest cookies)
+Do **not** use `http://127.0.0.1:8000` on the frontend PC — that points at itself, not the API host.
 
-`vite.config.ts` (or `.js`):
+### 2.2 Recommended — direct call to API PC (simplest for two machines)
+
+1. Frontend `.env`:
+
+```env
+VITE_API_BASE_URL=http://10.100.4.15:8000
+```
+
+2. On the **API PC** `.env`, allow the frontend origin(s):
+
+```env
+# Frontend may run as localhost:5173 on the other PC, or via that PC's LAN IP
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://10.100.4.20:5173
+```
+
+Use the **frontend PC’s** IP in `CORS_ORIGINS` if users open the Vite app as `http://<frontend-ip>:5173`.  
+If they only open `http://localhost:5173` on the frontend PC, `http://localhost:5173` is enough.
+
+3. Restart API on this PC after changing `CORS_ORIGINS`
+4. Always use `credentials: "include"` (cookie session)
+
+> Browsers reject `Access-Control-Allow-Origin: *` with cookies. List each frontend origin explicitly.
+
+### 2.3 Optional — Vite proxy on the frontend PC
+
+Proxy target must be the **API PC**, not localhost:
 
 ```ts
+// vite.config.ts on the FRONTEND machine
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react"; // or vue(), etc.
+import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    host: true, // optional: allow other devices to open this Vite UI
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: "http://10.100.4.15:8000", // API host LAN IP
         changeOrigin: true,
       },
     },
@@ -99,21 +172,8 @@ export default defineConfig({
 });
 ```
 
-Then in the app use a **relative** base (`""` or omit host) so browser calls `http://localhost:5173/api/...` and Vite forwards to the API. Cookies stay same-origin.
-
-### 2.3 Option B — Direct cross-origin
-
-1. Set `VITE_API_BASE_URL=http://<API-HOST>:8000`
-2. On the API host `.env`, add your Vite origin to `CORS_ORIGINS`:
-
-```env
-CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://192.168.1.20:5173
-```
-
-3. Restart the API after changing `CORS_ORIGINS`
-4. Always use `credentials: "include"` on `fetch` / axios
-
-> Browsers reject `Access-Control-Allow-Origin: *` with cookies. Origins must be listed explicitly.
+Then set `VITE_API_BASE_URL=` (empty) and call `/api/...` relatively.  
+Still add the Vite origin to API `CORS_ORIGINS` only if you are **not** proxying (direct mode). With proxy, the browser talks to Vite same-origin; Vite server talks to the API PC.
 
 ### 2.4 Shared API client (`src/api/client.ts`)
 
@@ -332,8 +392,10 @@ All paths are under `{BASE_URL}`. Auth = cookie required unless noted.
 ## 5. curl cheat sheet
 
 ```bash
+# From API PC:
 export BASE_URL="http://127.0.0.1:8000"
-# export BASE_URL="http://192.168.1.50:8000"
+# From another PC on LAN (use API host IP):
+# export BASE_URL="http://10.100.4.15:8000"
 
 # Login
 curl -s -c cookies.txt -X POST "$BASE_URL/api/auth/login" \
@@ -361,12 +423,40 @@ curl -s -b cookies.txt "$BASE_URL/api/invoice-history?employee_id=EMP001&limit=5
 
 ---
 
-## 6. Checklist for a separate Vite app
+## 6. Invoice templates (frontend)
 
-1. API running with `--host 0.0.0.0 --port 8000`
-2. Copy this `API.md` into the Vite repo (or link to it)
-3. Prefer **Vite proxy** `/api` → API (section 2.2), **or** set `VITE_API_BASE_URL` + API `CORS_ORIGINS`
+Full template list for UI dropdowns: see **`TEMPLATES.md`** (same folder / Desktop).
+
+- `invoice_template` values: **1–14**
+- Live list: `GET /api/templates/status` → each item has `id`, `label`, `name`, `exists`
+
+---
+
+## 7. Two-machine checklist
+
+### On this PC (backend)
+
+1. Start API: `uvicorn backend.app.main:app --host 0.0.0.0 --port 8000`
+2. Note LAN IP (example: `10.100.4.15`)
+3. Allow firewall TCP **8000**
+4. Set `CORS_ORIGINS` to include the frontend origin(s), then restart API
+5. Confirm locally: `curl http://127.0.0.1:8000/api/health`
+
+### On the other PC (frontend / Vite)
+
+1. Copy this `API.md` into the Vite repo
+2. Set `VITE_API_BASE_URL=http://10.100.4.15:8000` (API PC IP)
+3. From that PC, confirm: `curl http://10.100.4.15:8000/api/health`
 4. Use the `api()` helper with `credentials: "include"`
-5. Login once → call `/api/auth/me` on app boot → protect routes on `401`
-6. For ZIP/PDF endpoints, download as `Blob`
-7. Optional: generate TS types from `{BASE_URL}/openapi.json` (e.g. `openapi-typescript`)
+5. Login → `/api/auth/me` on boot → redirect to login on `401`
+6. ZIP/PDF downloads: treat response as `Blob`
+7. Optional: types from `http://10.100.4.15:8000/openapi.json`
+
+### Quick troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Frontend gets connection refused | API not on `0.0.0.0`, wrong IP, or firewall blocking 8000 |
+| `curl` from other PC fails | Same as above; test IP with `ping` first |
+| Login works in curl but not browser | Add Vite origin to `CORS_ORIGINS`; use `credentials: "include"` |
+| Frontend uses `127.0.0.1` | Wrong — that is the frontend PC itself; use API PC LAN IP |
