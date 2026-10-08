@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend.app.auth_deps import OptionalUser, RequireAdmin, RequireUser
+from backend.app.auth_deps import OptionalUser, RequireAdmin
 from backend.app.db import run_migrations
 from backend.app.db.clubing_repo import list_clubs
 from backend.app.db.employees_repo import (
@@ -177,14 +177,6 @@ async def root():
     return {"message": "Invoice API is running. Place frontend in /frontend."}
 
 
-@app.get("/login.html")
-async def login_page():
-    page = FRONTEND_DIR / "login.html"
-    if page.exists():
-        return FileResponse(page)
-    raise HTTPException(status_code=404, detail="login.html not found")
-
-
 # ---------- auth ----------
 
 
@@ -278,12 +270,12 @@ async def users_delete(user_id: int, _admin: RequireAdmin):
 
 
 @app.get("/api/departments")
-async def departments(_user: RequireUser):
+async def departments():
     return {"departments": list(VALID_DEPARTMENTS)}
 
 
 @app.get("/api/employees")
-async def employees_list(_user: RequireUser, department: str | None = None):
+async def employees_list(department: str | None = None):
     try:
         return {"employees": list_employees(department)}
     except ValidationError as e:
@@ -291,7 +283,7 @@ async def employees_list(_user: RequireUser, department: str | None = None):
 
 
 @app.get("/api/employees/{employee_id}")
-async def employees_get(_user: RequireUser, employee_id: str):
+async def employees_get(employee_id: str):
     try:
         return get_employee(employee_id)
     except ValidationError as e:
@@ -299,7 +291,7 @@ async def employees_get(_user: RequireUser, employee_id: str):
 
 
 @app.post("/api/employees")
-async def employees_create(_user: RequireUser, body: EmployeeCreate):
+async def employees_create(body: EmployeeCreate):
     try:
         return create_employee(body.model_dump())
     except ValidationError as e:
@@ -307,9 +299,7 @@ async def employees_create(_user: RequireUser, body: EmployeeCreate):
 
 
 @app.put("/api/employees/{employee_id}")
-async def employees_update(
-    _user: RequireUser, employee_id: str, body: EmployeeUpdate
-):
+async def employees_update(employee_id: str, body: EmployeeUpdate):
     try:
         payload = {
             k: v
@@ -322,7 +312,7 @@ async def employees_update(
 
 
 @app.delete("/api/employees/{employee_id}")
-async def employees_delete(_user: RequireUser, employee_id: str):
+async def employees_delete(employee_id: str):
     try:
         return delete_employee(employee_id)
     except ValidationError as e:
@@ -330,7 +320,7 @@ async def employees_delete(_user: RequireUser, employee_id: str):
 
 
 @app.post("/api/employees/generate")
-async def employees_generate(_user: RequireUser, body: EmployeeGenerateRequest):
+async def employees_generate(body: EmployeeGenerateRequest):
     try:
         zip_bytes = generate_invoices_for_employees(
             [item.model_dump() for item in body.employees]
@@ -349,7 +339,7 @@ async def employees_generate(_user: RequireUser, body: EmployeeGenerateRequest):
 
 
 @app.get("/api/clubbing")
-async def clubbing_list(_user: RequireUser, department: str | None = None):
+async def clubbing_list(department: str | None = None):
     try:
         return {"clubs": list_clubs(department)}
     except ValidationError as e:
@@ -358,7 +348,6 @@ async def clubbing_list(_user: RequireUser, department: str | None = None):
 
 @app.get("/api/invoice-history")
 async def invoice_history(
-    _user: RequireUser,
     employee_id: str | None = None,
     department: str | None = None,
     limit: int = 100,
@@ -374,7 +363,7 @@ async def invoice_history(
 
 
 @app.get("/api/templates/status")
-async def word_templates_status(_user: RequireUser):
+async def word_templates_status():
     return {
         "word_dir": str(WORD_DIR),
         "preview_dir": str(HTML_DIR),
@@ -390,7 +379,7 @@ async def word_templates_status(_user: RequireUser):
 
 
 @app.get("/api/categories/status")
-async def category_tasks_status(_user: RequireUser):
+async def category_tasks_status():
     return categories_status()
 
 
@@ -399,7 +388,6 @@ async def category_tasks_status(_user: RequireUser):
 
 @app.post("/api/manual/generate")
 async def manual_generate(
-    _user: RequireUser,
     person_name: str = Form(...),
     company_name: str = Form(...),
     email: str = Form(...),
@@ -427,7 +415,6 @@ async def manual_generate(
 
 @app.post("/api/bulk/generate")
 async def bulk_generate(
-    _user: RequireUser,
     category: str = Form(...),
     current_month: UploadFile = File(...),
 ):
@@ -452,7 +439,7 @@ async def bulk_generate(
 
 
 @app.post("/api/bulk/payment-generate")
-async def payment_bulk_generate(_user: RequireUser, sheet: UploadFile = File(...)):
+async def payment_bulk_generate(sheet: UploadFile = File(...)):
     try:
         content = await sheet.read()
         zip_bytes, _files = build_payment_sheet_zip(content)
@@ -467,7 +454,7 @@ async def payment_bulk_generate(_user: RequireUser, sheet: UploadFile = File(...
 
 
 @app.post("/api/word-test/generate")
-async def word_test_generate(_user: RequireUser, sheet: UploadFile = File(...)):
+async def word_test_generate(sheet: UploadFile = File(...)):
     try:
         content = await sheet.read()
         zip_bytes, _files = build_word_test_zip(content)

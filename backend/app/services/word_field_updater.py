@@ -39,8 +39,9 @@ def format_amount(amount: int) -> str:
 
 def _rebuild_bank_account_block(text: str, data: WordInvoiceData) -> str | None:
     """
-    Rebuild payment paragraphs that use Bank Name / Account Name / Account No / Branch Code.
-    Keeps any prefix before the first Bank Name label (e.g. company + PAY TO:).
+    Rebuild payment paragraphs that use Bank Name / Account Name [/ Account No / Branch].
+    Only include Account No / Branch Code when those labels already exist in the
+    paragraph so split layouts (Ravotek / Ecomify / Synergo) stay intact.
     """
     match = re.search(r"(?i)bank\s*name", text)
     if not match:
@@ -50,19 +51,23 @@ def _rebuild_bank_account_block(text: str, data: WordInvoiceData) -> str | None:
     name = data.person_name or ""
     iban = data.iban or ""
     branch = data.branch_code or ""
+    has_account_no = bool(re.search(r"(?i)account\s*no", text))
+    has_branch = bool(re.search(r"(?i)branch\s*code", text))
     # Prefer newline style when original had newlines.
     if "\n" in text[match.start() :]:
-        body = (
-            f"Bank Name: {bank}\n"
-            f"Account Name: {name}\n"
-            f"Account No.: {iban}\n"
-            f"Branch Code: {branch}"
-        )
+        lines = [f"Bank Name: {bank}", f"Account Name: {name}"]
+        if has_account_no:
+            lines.append(f"Account No.: {iban}")
+        if has_branch:
+            lines.append(f"Branch Code: {branch}")
+        body = "\n".join(lines)
     else:
-        body = (
-            f"Bank Name: {bank} Account Name: {name} "
-            f"Account No.: {iban} Branch Code: {branch}"
-        )
+        parts = [f"Bank Name: {bank}", f"Account Name: {name}"]
+        if has_account_no:
+            parts.append(f"Account No.: {iban}")
+        if has_branch:
+            parts.append(f"Branch Code: {branch}")
+        body = " ".join(parts)
     return prefix + body
 
 
@@ -88,6 +93,17 @@ def _replace_paragraph_text(paragraph, new_text: str) -> None:
         paragraph.add_run(new_text)
 
 
+def _iter_textbox_paragraphs(doc: Document):
+    """Paragraphs inside Word text boxes (headers like INVOICE NO / DATE)."""
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    root = doc.element
+    for txbx in root.findall(".//" + qn("w:txbxContent")):
+        for p_elm in txbx.findall(qn("w:p")):
+            yield Paragraph(p_elm, doc)
+
+
 def _iter_cell_paragraphs(cell):
     paragraphs = list(cell.paragraphs)
     for nested in cell.tables:
@@ -105,6 +121,192 @@ def _iter_all_paragraphs(doc: Document):
             for cell in row.cells:
                 for paragraph in _iter_cell_paragraphs(cell):
                     yield paragraph
+    yield from _iter_textbox_paragraphs(doc)
+
+
+def _patch_payment_runs(paragraph, data: WordInvoiceData) -> bool:
+    """
+    Fill Bank Name / Account Name / Account No / Branch Code by editing runs
+    in place. Avoid rewriting the whole paragraph (that collapses layouts that
+    rely on separate runs for address vs PAY TO columns).
+    """
+    runs = list(paragraph.runs)
+    if not runs:
+        return False
+    changed = False
+    bank = data.bank or ""
+    name = data.person_name or ""
+    iban = data.iban or ""
+    branch = data.branch_code or ""
+
+    # Join run texts to understand label → value mapping, then patch value runs.
+    full = paragraph.text
+    if not re.search(r"(?i)bank\s*name|account\s*name|account\s*no|branch\s*code", full):
+        return False
+
+    for i, run in enumerate(runs):
+        text = run.text or ""
+        stripped = text.strip()
+        lower = stripped.lower().rstrip(":")
+
+        if lower == "bank name" or re.fullmatch(r"(?i)bank\s*name\s*:?", stripped):
+            run.text = f"Bank Name: {bank}"
+            if i + 1 < len(runs) and (runs[i + 1].text or "") in {" ", ""}:
+                runs[i + 1].text = ""
+            changed = True
+            continue
+
+        if re.match(r"(?i)^bank\s*name\s*:", stripped):
+            run.text = f"Bank Name: {bank}"
+            changed = True
+            continue
+
+        if lower == "account name" or re.fullmatch(
+            r"(?i)account\s*name\s*:?", stripped
+        ):
+            run.text = f"Account Name: {name}"
+            # Clear following name-value fragment runs until Account No / newline.
+            for j in range(i + 1, len(runs)):
+                frag = runs[j].text or ""
+                if frag.startswith("\n") or re.search(
+                    r"(?i)account\s*no|branch\s*code", frag
+                ):
+                    break
+                if frag.strip() in {"", "Account"}:
+                    continue
+                if re.match(r"(?i)^name\s*:", frag):
+                    runs[j].text = ""
+                    continue
+                if re.search(r"(?i)bank|pay\s*to|invoice", frag):
+                    break
+                # Old person-name fragments (e.g. "Daniel ", "Gallego ")
+                if not re.match(r"(?i)^(account|branch|bank|name:)", frag.strip()):
+                    runs[j].text = ""
+            changed = True
+            continue
+
+        if re.fullmatch(r"(?i)name\s*:", stripped) and i > 0:
+            prev = (runs[i - 1].text or "").lower()
+            if "account" in prev:
+                run.text = "Name: "
+                # Put full name into next value run(s); stop before Account No.
+                placed = False
+                for j in range(i + 1, len(runs)):
+                    frag = runs[j].text or ""
+                    frag_st = frag.strip().lower()
+                    if frag.startswith("\n") or re.search(
+                        r"(?i)account\s*no|branch\s*code", frag
+                    ):
+                        break
+                    if frag_st in {"account", "account no", "account no.", "no.", "no:"}:
+                        break
+                    if frag_st.startswith("account"):
+                        break
+                    if not placed:
+                        runs[j].text = name + " "
+                        placed = True
+                    else:
+                        runs[j].text = ""
+                if not placed:
+                    run.text = f"Name: {name} "
+                changed = True
+            continue
+
+        if re.match(r"(?i)^account\s*no\.?\s*:", stripped) or stripped.lower() in {
+            "account no:",
+            "account no.:",
+            "account no",
+        }:
+            # Label and value may share a run ("\nAccount No:") or be split.
+            prefix_nl = "\n" if text.startswith("\n") else ""
+            run.text = f"{prefix_nl}Account No.: {iban}"
+            # Clear following IBAN digit runs until newline/branch
+            for j in range(i + 1, len(runs)):
+                frag = runs[j].text or ""
+                if frag.startswith("\n") or re.search(r"(?i)branch\s*code", frag):
+                    break
+                if re.match(r"(?i)^no\.?\s*:", frag.strip()):
+                    runs[j].text = ""
+                    continue
+                runs[j].text = ""
+            changed = True
+            continue
+
+        if re.fullmatch(r"(?i)no\.?\s*:", stripped) and i > 0:
+            prev = (runs[i - 1].text or "").lower()
+            if "account" in prev:
+                run.text = "No.: "
+                for j in range(i + 1, len(runs)):
+                    frag = runs[j].text or ""
+                    if frag.startswith("\n") or re.search(r"(?i)branch", frag):
+                        break
+                    runs[j].text = iban if j == i + 1 else ""
+                    if j == i + 1:
+                        changed = True
+                continue
+
+        if lower == "branch code" or re.fullmatch(
+            r"(?i)branch\s*code\s*:?", stripped
+        ):
+            run.text = f"Branch Code: {branch}"
+            if i + 1 < len(runs) and (runs[i + 1].text or "").strip() in {":", ""}:
+                if (runs[i + 1].text or "").strip() == ":":
+                    runs[i + 1].text = ""
+            changed = True
+            continue
+
+        if re.match(r"(?i)^branch\s*code\s*:", stripped):
+            run.text = f"Branch Code: {branch}"
+            changed = True
+            continue
+
+    return changed
+
+
+def _update_textbox_invoice_meta(
+    doc: Document,
+    invoice_no: str,
+    *,
+    invoice_date_str: str | None = None,
+) -> None:
+    """Update INVOICE NO / DATE values stored in text-box w:t nodes (Ravotek/Cozy)."""
+    from datetime import date as _date
+
+    from docx.oxml.ns import qn
+
+    from backend.app.services.word_date_updater import format_invoice_date
+
+    if not invoice_no and not invoice_date_str:
+        return
+    date_str = invoice_date_str or format_invoice_date(_date.today())
+
+    for txbx in doc.element.findall(".//" + qn("w:txbxContent")):
+        nodes = list(txbx.findall(".//" + qn("w:t")))
+        for i, node in enumerate(nodes):
+            val = (node.text or "").strip()
+            upper = val.upper().replace(" ", "")
+            if upper in {"NO:", "NO"} or upper.endswith("NO:"):
+                for j in range(i + 1, len(nodes)):
+                    nxt = (nodes[j].text or "").strip()
+                    if not nxt:
+                        continue
+                    if invoice_no:
+                        nodes[j].text = invoice_no
+                    break
+            if upper in {"DATE:", "DATE"}:
+                first = True
+                for j in range(i + 1, len(nodes)):
+                    piece = nodes[j].text
+                    if piece is None:
+                        continue
+                    # Stop if we hit another label-like token
+                    if piece.strip().upper() in {"INVOICE", "NO:", "NO"}:
+                        break
+                    if first:
+                        nodes[j].text = date_str
+                        first = False
+                    else:
+                        nodes[j].text = ""
 
 
 def _update_branch_code_in_paragraph(paragraph, branch: str) -> bool:
@@ -152,6 +354,23 @@ def _replace_labeled_line_value(paragraph, label: str, new_value: str) -> bool:
     return True
 
 
+def _replace_invoice_no_token(text: str, invoice_no: str) -> str | None:
+    """Replace only the invoice-number value; keep DATE/tabs on the same line."""
+    # Prefer tab-delimited value: INVOICE NO:\t01234\t...\tDATE:\t...
+    match = re.search(r"(?i)(invoice\s*no\.?\s*:?\s*)([^\t\r\n]+)", text)
+    if match and "\t" in text[match.start() :]:
+        # Value runs until the next tab.
+        start = match.start(2)
+        tab_at = text.find("\t", start)
+        end = tab_at if tab_at != -1 else match.end(2)
+        return text[:start] + invoice_no + text[end:]
+
+    match = re.search(r"(?i)(invoice\s*no\.?\s*:?\s*)(\S+)", text)
+    if match and not re.search(r"(?i)^date\b", match.group(2)):
+        return text[: match.start(2)] + invoice_no + text[match.end(2) :]
+    return None
+
+
 def _update_invoice_no_fields(doc: Document, invoice_no: str) -> None:
     """Fill Invoice No. in the document with the incremented value from the sheet."""
     if not invoice_no:
@@ -160,9 +379,20 @@ def _update_invoice_no_fields(doc: Document, invoice_no: str) -> None:
         if _is_layout_only_text(paragraph.text):
             continue
         text = paragraph.text
+        # Multi-field lines (Bravix): replace token only, never wipe DATE.
+        if "\t" in text and re.search(r"(?i)invoice\s*no", text):
+            new_text = _replace_invoice_no_token(text, invoice_no)
+            if new_text and new_text != text:
+                _replace_paragraph_text(paragraph, new_text)
+            continue
         if _replace_labeled_line_value(paragraph, "Invoice No.", invoice_no):
             continue
         if _replace_labeled_line_value(paragraph, "Invoice Number", invoice_no):
+            continue
+        if re.search(r"(?i)invoice\s*no", text) and re.search(r"(?i)\bdate\b", text):
+            new_text = _replace_invoice_no_token(text, invoice_no)
+            if new_text and new_text != text:
+                _replace_paragraph_text(paragraph, new_text)
             continue
         if _replace_labeled_line_value(paragraph, "INVOICE NO", invoice_no):
             continue
@@ -206,6 +436,20 @@ def _update_payment_fields(doc: Document, data: WordInvoiceData) -> None:
     bank = data.bank
     iban = data.iban
     branch = data.branch_code or ""
+
+    # Ignitai: labels are fused across runs ("Name: Account Name: Account No:").
+    if inv == 7:
+        for paragraph in doc.paragraphs:
+            raw = paragraph.text.strip()
+            if raw.startswith("Bank Name:") and "Account Name:" in raw:
+                _replace_paragraph_text(
+                    paragraph,
+                    (
+                        f"Bank Name: {bank}    Account Name: {name}\n"
+                        f"Account No: {iban}    Branch Code: {branch}"
+                    ),
+                )
+                return
 
     for paragraph in _iter_all_paragraphs(doc):
         if _is_layout_only_text(paragraph.text):
@@ -252,10 +496,27 @@ def _update_payment_fields(doc: Document, data: WordInvoiceData) -> None:
         if _update_payment_line(paragraph, IBAN_LINE_PATTERN, iban):
             continue
         if re.match(r"(?i)^Account\s*No\.?\s*:", text):
-            _replace_labeled_line_value(paragraph, "Account No.", iban)
+            # Templates vary: "Account No.:" vs "Account No:". Only touch the
+            # first line so a following "Branch Code:" line is preserved.
+            # Do not let \s* consume the newline before Branch Code.
+            lead, core, trail = _split_outer_whitespace(paragraph.text)
+            new_core = re.sub(
+                r"(?i)^(Account\s*No\.?\s*:)[ \t]*[^\n]*",
+                lambda m: f"{m.group(1)} {iban}",
+                core,
+                count=1,
+            )
+            _replace_paragraph_text(paragraph, f"{lead}{new_core}{trail}")
             continue
         if re.match(r"(?i)^Account\s*NO\s*:", text):
-            _replace_labeled_line_value(paragraph, "Account NO", iban)
+            lead, core, trail = _split_outer_whitespace(paragraph.text)
+            new_core = re.sub(
+                r"(?i)^(Account\s*NO\s*:)[ \t]*[^\n]*",
+                lambda m: f"{m.group(1)} {iban}",
+                core,
+                count=1,
+            )
+            _replace_paragraph_text(paragraph, f"{lead}{new_core}{trail}")
             continue
         if branch and _update_payment_line(paragraph, BRANCH_LINE_PATTERN, branch):
             continue
@@ -263,13 +524,11 @@ def _update_payment_fields(doc: Document, data: WordInvoiceData) -> None:
         if _update_payment_line(paragraph, ACCOUNT_NAME_LINE_PATTERN, f" {name}".strip()):
             continue
 
-        # Multiline Bank Name / Account Name / Account No / Branch Code blocks
-        if re.search(r"(?i)bank\s*name", text) and re.search(
+        # Multiline Bank Name / Account Name blocks — patch runs (keep layout).
+        if re.search(r"(?i)bank\s*name", text) or re.search(
             r"(?i)account\s*name", text
         ):
-            rebuilt = _rebuild_bank_account_block(text, data)
-            if rebuilt and rebuilt != paragraph.text:
-                _replace_paragraph_text(paragraph, rebuilt)
+            if _patch_payment_runs(paragraph, data):
                 continue
 
         if PAYMENT_NAME_LINE_PATTERN.match(text) and not re.search(
@@ -456,12 +715,26 @@ def _ensure_tax_zero(table, amount_col: int) -> None:
             _set_cell_all_amounts(_amount_cell(row, amount_col), 0)
 
 
+def _row_looks_like_column_header(row) -> bool:
+    """True for SERVICE/DESCRIPTION/ITEM header rows (do not overwrite TOTAL col)."""
+    blob = " ".join(cell.text for cell in row.cells).lower()
+    # Templates like Bravix use spaced letters: "S E R V I C E" / "T O T A L".
+    compact = re.sub(r"[\s:]", "", blob)
+    has_item_header = any(
+        key in compact for key in ("service", "description", "item", "qty", "quantity")
+    )
+    has_total_header = "total" in compact or "amount" in compact
+    return has_item_header and has_total_header
+
+
 def _update_subtotal_and_total(table, total_amount: int, amount_col: int) -> None:
     """Sub Total and T O T A L / Total rows in table get the same frontend total."""
     sub_total_rows: list[int] = []
 
     for ri, row in enumerate(table.rows):
         if len(row.cells) <= amount_col:
+            continue
+        if ri == 0 or _row_looks_like_column_header(row):
             continue
 
         amount_cell = _amount_cell(row, amount_col)
@@ -492,12 +765,16 @@ def _update_subtotal_and_total(table, total_amount: int, amount_col: int) -> Non
         next_ri = ri + 1
         if next_ri < len(table.rows):
             next_row = table.rows[next_ri]
+            if _row_looks_like_column_header(next_row):
+                continue
             if _row_has_tax(next_row, amount_col):
                 continue
             if _row_has_total_only(next_row, amount_col) and len(next_row.cells) > amount_col:
                 _set_cell_all_amounts(_amount_cell(next_row, amount_col), total_amount)
 
-    for row in table.rows:
+    for ri, row in enumerate(table.rows):
+        if ri == 0 or _row_looks_like_column_header(row):
+            continue
         if _row_has_total_only(row, amount_col) and len(row.cells) > amount_col:
             _set_cell_all_amounts(_amount_cell(row, amount_col), total_amount)
 
@@ -505,7 +782,8 @@ def _update_subtotal_and_total(table, total_amount: int, amount_col: int) -> Non
 def _update_paragraph_totals(doc: Document, total_amount: int) -> None:
     """Update Total lines outside the table (e.g. Invoice 5 paragraph Total)."""
     amount_str = format_amount(total_amount)
-    for paragraph in doc.paragraphs:
+    paragraphs = list(doc.paragraphs)
+    for i, paragraph in enumerate(paragraphs):
         text = paragraph.text.strip()
         if not text.lower().startswith("total"):
             continue
@@ -517,7 +795,23 @@ def _update_paragraph_totals(doc: Document, total_amount: int) -> None:
             new_text = TOTAL_AMOUNT_PATTERN.sub(amount_str, text, count=1)
             _replace_paragraph_text(paragraph, new_text)
         elif text.lower() in ("total", "total:"):
-            _replace_paragraph_text(paragraph, f"Total\t{amount_str}")
+            # Cozy-style: label on one para, amount on the next — keep spacer runs.
+            if i + 1 < len(paragraphs) and TOTAL_AMOUNT_PATTERN.search(
+                paragraphs[i + 1].text
+            ):
+                nxt = paragraphs[i + 1]
+                patched = False
+                for run in nxt.runs:
+                    if TOTAL_AMOUNT_PATTERN.search(run.text or ""):
+                        run.text = TOTAL_AMOUNT_PATTERN.sub(
+                            amount_str, run.text, count=1
+                        )
+                        patched = True
+                        break
+                if not patched:
+                    _replace_paragraph_text(nxt, f"   {amount_str}")
+            else:
+                _replace_paragraph_text(paragraph, f"Total\t{amount_str}")
 
 
 def _update_line_items(
@@ -538,10 +832,13 @@ def _update_line_items(
         if row_idx >= len(table.rows):
             continue
         row = table.rows[row_idx]
-        if len(row.cells) > config.desc_col:
-            _set_cell_text(row.cells[config.desc_col], "")
-        if len(row.cells) > config.amount_col:
-            _set_cell_text(row.cells[config.amount_col], "")
+        start = min(config.desc_col, config.amount_col)
+        end = max(config.desc_col, config.amount_col)
+        for ci in range(start, min(len(row.cells), end + 1)):
+            # Keep leading row-number columns (Ravotek "4.", Ecomify "4 .").
+            if ci < config.desc_col:
+                continue
+            _set_cell_text(row.cells[ci], "")
 
 
 def _all_document_tables(doc: Document) -> list:
@@ -778,10 +1075,18 @@ def _update_template_6_ravotek(doc: Document, data: WordInvoiceData) -> None:
 
 def _update_template_7_ignitai(doc: Document, data: WordInvoiceData) -> None:
     _fill_standard_club_template(doc, data)
+    config = line_item_config(7)
     tables = _all_document_tables(doc)
-    if tables:
-        table = tables[0]
-        # Total Amount Due row
+    # Ignitai can embed duplicate line-item tables in text boxes — keep them in sync.
+    for table in tables:
+        header = " ".join(c.text for c in table.rows[0].cells).lower() if table.rows else ""
+        header += " ".join(c.text for c in table.rows[1].cells).lower() if len(table.rows) > 1 else ""
+        if "item" not in re.sub(r"[\s:]", "", header) and "description" not in re.sub(
+            r"[\s:]", "", header
+        ):
+            continue
+        if data.tasks and len(data.tasks) >= 3:
+            _update_line_items(table, data.tasks[:3], config)
         if len(table.rows) > 8 and len(table.rows[8].cells) > 3:
             _set_cell_all_amounts(table.rows[8].cells[3], data.total_amount)
     # Invoice number sits on the paragraph after "Invoice Number:"
@@ -826,9 +1131,20 @@ def _update_template_10_cozy(doc: Document, data: WordInvoiceData) -> None:
     _fill_standard_club_template(doc, data)
     amount_str = format_amount(data.total_amount)
     for i, paragraph in enumerate(doc.paragraphs):
-        if paragraph.text.strip().upper() == "TOTAL" and i + 1 < len(doc.paragraphs):
-            _replace_paragraph_text(doc.paragraphs[i + 1], amount_str)
-            break
+        label = paragraph.text.strip().upper()
+        if label not in {"TOTAL", "TOTAL:"} or i + 1 >= len(doc.paragraphs):
+            continue
+        amount_para = doc.paragraphs[i + 1]
+        # Preserve leading spacer runs; only replace the $amount run.
+        replaced = False
+        for run in amount_para.runs:
+            if TOTAL_AMOUNT_PATTERN.search(run.text or ""):
+                run.text = TOTAL_AMOUNT_PATTERN.sub(amount_str, run.text, count=1)
+                replaced = True
+                break
+        if not replaced:
+            _replace_paragraph_text(amount_para, f"   {amount_str}")
+        break
 
 
 def _update_template_11_beecodify(doc: Document, data: WordInvoiceData) -> None:
@@ -849,18 +1165,29 @@ def _update_template_12_bravix(doc: Document, data: WordInvoiceData) -> None:
     if table and len(table.rows) > 6:
         row = table.rows[6]
         if row.cells:
+            # Keep original single-line footer labels.
             _set_cell_text(
                 row.cells[0],
                 (
-                    f"Account Name: {data.person_name}\n"
-                    f"Bank Name: {data.bank}\n"
-                    f"Account No: {data.iban}\n"
+                    f"Account Name: {data.person_name} "
+                    f"Bank Name: {data.bank} "
+                    f"Account No: {data.iban} "
                     f"Branch Code: {data.branch_code or ''}"
                 ),
             )
         _set_cell_all_amounts(row.cells[-1], data.total_amount)
         if len(row.cells) > 4:
             _set_cell_all_amounts(row.cells[4], data.total_amount)
+    if data.document_invoice_no:
+        for paragraph in doc.paragraphs:
+            if not re.search(r"(?i)invoice\s*no", paragraph.text):
+                continue
+            new_text = _replace_invoice_no_token(
+                paragraph.text, data.document_invoice_no
+            )
+            if new_text and new_text != paragraph.text:
+                _replace_paragraph_text(paragraph, new_text)
+            break
 
 
 def _update_template_13_alpha(doc: Document, data: WordInvoiceData) -> None:
@@ -958,7 +1285,11 @@ def update_invoice_fields(doc: Document, data: WordInvoiceData) -> None:
         handler(doc, data)
     # Some templates keep the invoice value on the next paragraph / own cell;
     # generic label rewrite can corrupt textbox layouts (e.g. Ignitai).
-    skip_generic_invoice_no = {7, 9, 11, 14}
+    # Handled in template-specific logic or fragile multi-field lines.
+    skip_generic_invoice_no = {7, 9, 11, 12, 14}
     if data.document_invoice_no and data.invoice_number not in skip_generic_invoice_no:
         _update_invoice_no_fields(doc, data.document_invoice_no)
+    # Text-box headers (Ravotek / Cozy): INVOICE NO + DATE live outside body paras.
+    if data.document_invoice_no or data.invoice_number >= 6:
+        _update_textbox_invoice_meta(doc, data.document_invoice_no or "")
     update_dated_in_document(doc, invoice_number=data.invoice_number)

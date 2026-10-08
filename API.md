@@ -2,13 +2,34 @@
 
 Use this file on **any machine**. Set `BASE_URL` to wherever the backend is running, then copy the curls as-is.
 
+**Built-in UI:** Opening `{BASE_URL}/` does **not** require login. Invoice routes (employees, generate, clubbing, templates, bulk) are public. Cookie auth is still used for `/api/auth/*` and admin-only `/api/users*`.
+
 | Environment | Example `BASE_URL` |
 |-------------|--------------------|
 | Same PC as server | `http://127.0.0.1:8000` |
-| Another PC on LAN | `http://192.168.x.x:8000` |
+| Same Wi‑Fi / LAN | `http://10.100.4.15:8000` |
+| **Anyone on the internet (public)** | `https://meaning-rugby-alloy-indie.trycloudflare.com` |
 | Deployed / staging | `https://api.your-domain.com` |
 
 Interactive docs (when server is up): `{BASE_URL}/docs`
+
+### Public share link (all devices)
+
+Current public URL (Cloudflare tunnel — keep API + tunnel running):
+
+- App: https://meaning-rugby-alloy-indie.trycloudflare.com/
+- Health: https://meaning-rugby-alloy-indie.trycloudflare.com/api/health
+- Docs: https://meaning-rugby-alloy-indie.trycloudflare.com/docs
+
+To recreate later:
+
+```powershell
+# 1) API must be running on port 8000
+# 2) Then:
+powershell -ExecutionPolicy Bypass -File scripts\share_public_url.ps1
+```
+
+Copy the `https://….trycloudflare.com` line from that window and share it. The URL changes each time you restart the tunnel.
 
 ---
 
@@ -45,9 +66,9 @@ Expected: `{"status":"ok","service":"invoice-generation","version":"1.2.0"}`
 ## 2. Auth (cookie session)
 
 - Cookie name: `invoice_session` (HTTP-only, ~12 hours)
-- After login, send the cookie on every call (`-c` / `-b` in curl, or `credentials: "include"` in browser)
+- Needed for **admin user management** (`/api/users*`); not required for invoice UI APIs
 - Roles: `admin` | `user`
-- No session → `401`. Non-admin on admin routes → `403`
+- No session on `/api/users*` → `401`. Non-admin on admin routes → `403`
 
 Default seeded admin (first startup from server `.env`):
 
@@ -217,26 +238,25 @@ curl -s -b cookies.txt -X POST "$BASE_URL/api/word-test/generate" \
 ```js
 const BASE_URL = "http://192.168.1.50:8000"; // change per environment
 
-// Login
+// Public invoice APIs (no login)
+await fetch(`${BASE_URL}/api/employees?department=QA`);
+
+// Admin user APIs still need cookie auth
 await fetch(`${BASE_URL}/api/auth/login`, {
   method: "POST",
   credentials: "include",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ identifier: "admin", password: "Admin@12345" }),
 });
-
-// Any protected call
-await fetch(`${BASE_URL}/api/employees?department=QA`, {
-  credentials: "include",
-});
+await fetch(`${BASE_URL}/api/users`, { credentials: "include" });
 ```
 
 | Topic | Rule |
 |--------|------|
-| Cookies | Always `credentials: "include"` |
-| 401 | Send user to login |
-| Cross-origin FE | Cookie auth needs matching CORS origins (not `*`) + server reachable from that machine |
-| Same host | Open `{BASE_URL}/` or `{BASE_URL}/login.html` |
+| Built-in UI | No login page; open `{BASE_URL}/` |
+| Invoice APIs | Public (no cookie required) |
+| `/api/users*` | Admin session cookie required (`credentials: "include"`) |
+| Cross-origin FE | For cookie auth, use real CORS origins (not `*`) + reachable host |
 
 ---
 

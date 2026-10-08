@@ -35,9 +35,12 @@ def test_auth_flow_and_protection():
 
     client = TestClient(app)
 
-    # Unauthenticated employees API
+    # Invoice UI APIs are public (no login required)
     res = client.get("/api/employees")
-    assert res.status_code == 401
+    assert res.status_code == 200
+
+    # Users admin API requires auth
+    assert client.get("/api/users").status_code == 401
 
     # Bad login
     bad = client.post(
@@ -59,7 +62,6 @@ def test_auth_flow_and_protection():
     assert me.status_code == 200
     assert me.json()["authenticated"] is True
 
-    # Protected endpoint works
     emp = client.get("/api/employees?department=QA")
     assert emp.status_code == 200
 
@@ -93,7 +95,9 @@ def test_auth_flow_and_protection():
     assert dup.status_code == 400
 
     client.post("/api/auth/logout")
-    assert client.get("/api/employees").status_code == 401
+    # UI APIs stay public after logout
+    assert client.get("/api/employees").status_code == 200
+    assert client.get("/api/users").status_code == 401
 
     # Normal user cannot manage users
     user_login = client.post(

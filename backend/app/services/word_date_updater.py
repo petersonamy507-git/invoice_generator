@@ -7,23 +7,31 @@ from docx import Document
 
 from backend.app.services.validation import ValidationError
 
+# Colon required so "Date" inside addresses (e.g. "...92507Date:") is not
+# matched as label+value with value=":".
 INLINE_DATE_LABELS = re.compile(
-    r"(?i)(Dated\s*:?\s*|Invoice Date\s*:?\s*|Date\s*:?\s*|Pay by\s*:?\s*)(.+)$"
+    r"(?i)((?:Dated|Invoice Date|Date|Pay by)\s*:\s*)(.*)$"
 )
 DATE_VALUE = re.compile(
-    r"(\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{4}|"
+    r"("
+    r"\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{4}|"
+    r"\d{1,2}\s*\.\s*\d{1,2}\s*\.\s*\d{4}|"
+    # Spaced digits used by Ecomify-style templates: "0 1 / 0 2 / 2 0 2 3"
+    r"(?:\d\s*){1,2}/\s*(?:\d\s*){1,2}/\s*(?:\d\s*){4}|"
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
     r"[\s,]+\d{1,2}[\s,]+\d{4}|"
     r"\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-    r"(?:\s+\d{4})?)"
+    r"(?:\s+\d{4})?"
+    r")"
 )
 
 
 def format_invoice_date(d: date | None = None) -> str:
     d = d or date.today()
-    return f"{d.strftime('%b')} {d.day}, {d.year}"
+    # Full month name matches Word samples (e.g. "September 15, 2030")
+    return f"{d.strftime('%B')} {d.day}, {d.year}"
 
 
 def _is_layout_only_text(text: str) -> bool:
@@ -81,7 +89,12 @@ def _update_inline_labeled_paragraph(paragraph, new_date: str) -> bool:
 
     match = INLINE_DATE_LABELS.search(text)
     if match:
-        if match.group(2).strip() == new_date:
+        existing = match.group(2).strip()
+        # Empty value means the real date is usually on the next paragraph
+        # (Coretechify / Ignitai / Synergo). Do not glue the date onto the label.
+        if not existing:
+            return False
+        if existing == new_date:
             return False
         prefix = text[: match.start()]
         new_core = prefix + match.group(1) + new_date
@@ -139,11 +152,21 @@ def _iter_table_paragraphs(table):
                 yield paragraph
 
 
+def _iter_textbox_paragraphs(doc: Document):
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    for txbx in doc.element.findall(".//" + qn("w:txbxContent")):
+        for p_elm in txbx.findall(qn("w:p")):
+            yield Paragraph(p_elm, doc)
+
+
 def _iter_paragraphs(doc: Document):
     for paragraph in doc.paragraphs:
         yield paragraph
     for table in doc.tables:
         yield from _iter_table_paragraphs(table)
+    yield from _iter_textbox_paragraphs(doc)
     for section in doc.sections:
         for header in (section.header, section.first_page_header, section.even_page_header):
             if header is not None:
@@ -193,7 +216,8 @@ def update_all_dates_in_document(
         if _update_paragraph_if_date_value(nxt, new_date):
             touch(nxt)
 
-    for paragraph in _iter_body_paragraphs(doc):
+    # Include table cells (Ecomify DATE value lives in a table, not body).
+    for paragraph in _iter_paragraphs(doc):
         if id(paragraph) in seen:
             continue
         if _is_layout_only_text(paragraph.text):
@@ -206,7 +230,7 @@ def update_all_dates_in_document(
     for table in doc.tables:
         for row in table.rows:
             row_has_date_header = any(
-                p.text.strip().lower() == "date"
+                re.sub(r"[\s:]", "", p.text).strip().lower() == "date"
                 for cell in row.cells
                 for p in _iter_cell_paragraphs(cell)
             )
@@ -216,7 +240,7 @@ def update_all_dates_in_document(
                 for paragraph in _iter_cell_paragraphs(cell):
                     if id(paragraph) in seen:
                         continue
-                    if paragraph.text.strip().lower() == "date":
+                    if re.sub(r"[\s:]", "", paragraph.text).strip().lower() == "date":
                         continue
                     if _update_paragraph_if_date_value(paragraph, new_date):
                         touch(paragraph)

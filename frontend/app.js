@@ -9,44 +9,6 @@ const successBox = document.getElementById("success-box");
 
 let currentDepartment = "";
 let employeesCache = [];
-let currentUser = null;
-
-async function ensureAuth() {
-  try {
-    const res = await fetch("/api/auth/me", { credentials: "include" });
-    const data = await res.json();
-    if (!data.authenticated) {
-      window.location.replace("/login.html");
-      return null;
-    }
-    currentUser = data.user;
-    const label = document.getElementById("current-user");
-    if (label && currentUser) {
-      label.textContent = `${currentUser.username} (${currentUser.role})`;
-      label.classList.remove("hidden");
-    }
-    return currentUser;
-  } catch {
-    window.location.replace("/login.html");
-    return null;
-  }
-}
-
-function redirectIfUnauthorized(res) {
-  if (res.status === 401) {
-    window.location.replace("/login.html");
-    return true;
-  }
-  return false;
-}
-
-document.getElementById("btn-logout")?.addEventListener("click", async () => {
-  try {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-  } finally {
-    window.location.replace("/login.html");
-  }
-});
 
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -88,7 +50,6 @@ function detailFromError(err) {
 }
 
 async function downloadFromResponse(response, fallbackName) {
-  if (redirectIfUnauthorized(response)) return;
   if (!response.ok) {
     let detail = "Request failed.";
     try {
@@ -113,11 +74,9 @@ async function downloadFromResponse(response, fallbackName) {
 
 async function apiJson(url, options = {}) {
   const res = await fetch(url, {
-    credentials: "include",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
-  if (redirectIfUnauthorized(res)) return;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(detailFromError(data.detail) || "Request failed.");
@@ -129,8 +88,7 @@ async function loadWordTemplateStatus() {
   const list = document.getElementById("template-status");
   if (!list) return;
   try {
-    const res = await fetch("/api/templates/status", { credentials: "include" });
-    if (redirectIfUnauthorized(res)) return;
+    const res = await fetch("/api/templates/status");
     const data = await res.json();
     list.innerHTML = "";
     Object.entries(data.templates).forEach(([num, info]) => {
@@ -145,6 +103,8 @@ async function loadWordTemplateStatus() {
     list.innerHTML = "<li>Could not load template status.</li>";
   }
 }
+
+loadWordTemplateStatus();
 
 /* -------- Excel bulk (legacy) -------- */
 const bulkCategoryInput = document.getElementById("bulk-category");
@@ -161,8 +121,7 @@ async function loadCategoryStatus() {
   const list = document.getElementById("category-status");
   if (!list) return;
   try {
-    const res = await fetch("/api/categories/status", { credentials: "include" });
-    if (redirectIfUnauthorized(res)) return;
+    const res = await fetch("/api/categories/status");
     const data = await res.json();
     list.innerHTML = "";
     if (!data.exists) {
@@ -179,6 +138,8 @@ async function loadCategoryStatus() {
     list.innerHTML = "<li>Could not load category task sheets.</li>";
   }
 }
+
+loadCategoryStatus();
 
 document.getElementById("bulk-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -198,11 +159,7 @@ document.getElementById("bulk-form").addEventListener("submit", async (e) => {
   body.append("category", bulkCategoryInput.value);
   body.append("current_month", form.current_month.files[0]);
   try {
-    const response = await fetch("/api/bulk/generate", {
-      method: "POST",
-      credentials: "include",
-      body,
-    });
+    const response = await fetch("/api/bulk/generate", { method: "POST", body });
     await downloadFromResponse(response, "invoices.zip");
     showSuccess("Excel bulk invoices downloaded.");
   } catch (err) {
@@ -442,7 +399,6 @@ btnGenerate.addEventListener("click", async () => {
   try {
     const response = await fetch("/api/employees/generate", {
       method: "POST",
-      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ employees }),
     });
@@ -454,10 +410,4 @@ btnGenerate.addEventListener("click", async () => {
   } finally {
     syncGenerateButton();
   }
-});
-
-ensureAuth().then((user) => {
-  if (!user) return;
-  loadWordTemplateStatus();
-  loadCategoryStatus();
 });
