@@ -3,6 +3,7 @@ import { Navigate } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { teamUsers } from '../api/users'
 import type { ApiUser, UserRole } from '../api/types'
+import { RowMenu } from '../components/invoice/RowMenu'
 import { AppHeader, SectionCard } from '../components/layout/AppChrome'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
@@ -36,6 +37,7 @@ export function TeamPage() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [formError, setFormError] = useState('')
+  const [revealPassword, setRevealPassword] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -94,10 +96,11 @@ export function TeamPage() {
     setMode('edit')
   }
 
-  const openPassword = (row: ApiUser) => {
+  const openPassword = (row: ApiUser, showPlain = false) => {
     setEditing(row)
     setPassword('')
     setConfirmPassword('')
+    setRevealPassword(showPlain)
     setFormError('')
     setMode('password')
   }
@@ -219,15 +222,14 @@ export function TeamPage() {
                       {row.last_login ? ` · Last login ${row.last_login}` : ' · Never logged in'}
                     </p>
                     <div className="team-actions">
-                      <Button variant="secondary" shape="pill" onClick={() => openEdit(row)}>
-                        Edit
-                      </Button>
-                      <Button variant="secondary" shape="pill" onClick={() => openPassword(row)}>
-                        Password
-                      </Button>
-                      <Button variant="ghost" shape="pill" onClick={() => void removeUser(row)}>
-                        Delete
-                      </Button>
+                      <RowMenu
+                        items={[
+                          { label: 'Edit', onClick: () => openEdit(row) },
+                          { label: 'Password', onClick: () => openPassword(row, false) },
+                          { label: 'Show password', onClick: () => openPassword(row, true) },
+                          { label: 'Delete', onClick: () => void removeUser(row), danger: true },
+                        ]}
+                      />
                     </div>
                   </article>
                 ))}
@@ -241,7 +243,7 @@ export function TeamPage() {
                       <th>Role</th>
                       <th>Status</th>
                       <th>Last login</th>
-                      <th className="col-action">Actions</th>
+                      <th className="col-action">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -252,16 +254,15 @@ export function TeamPage() {
                         <td>{row.role === 'admin' ? 'Admin' : 'User'}</td>
                         <td>{row.is_active ? 'Active' : 'Inactive'}</td>
                         <td>{row.last_login || '—'}</td>
-                        <td className="col-action team-row-actions">
-                          <button type="button" onClick={() => openEdit(row)}>
-                            Edit
-                          </button>
-                          <button type="button" onClick={() => openPassword(row)}>
-                            Password
-                          </button>
-                          <button type="button" className="is-danger" onClick={() => void removeUser(row)}>
-                            Delete
-                          </button>
+                        <td className="col-action">
+                          <RowMenu
+                            items={[
+                              { label: 'Edit', onClick: () => openEdit(row) },
+                              { label: 'Password', onClick: () => openPassword(row, false) },
+                              { label: 'Show password', onClick: () => openPassword(row, true) },
+                              { label: 'Delete', onClick: () => void removeUser(row), danger: true },
+                            ]}
+                          />
                         </td>
                       </tr>
                     ))}
@@ -312,20 +313,30 @@ export function TeamPage() {
             ) : null}
             {mode === 'create' || mode === 'password' ? (
               <>
+                {mode === 'password' ? (
+                  <p className="hint" style={{ gridColumn: '1 / -1', margin: 0 }}>
+                    Saved passwords are hashed and cannot be recovered. Set a new password below
+                    {revealPassword ? ' (shown as you type)' : ''}. Use the eye icon to show/hide.
+                  </p>
+                ) : null}
                 <TextField
+                  key={`pw-${revealPassword}-${editing?.id ?? 'new'}`}
                   label="Password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete="new-password"
+                  defaultPasswordVisible={revealPassword}
                   required
                 />
                 <TextField
+                  key={`pwc-${revealPassword}-${editing?.id ?? 'new'}`}
                   label="Confirm password"
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   autoComplete="new-password"
+                  defaultPasswordVisible={revealPassword}
                   required
                 />
               </>

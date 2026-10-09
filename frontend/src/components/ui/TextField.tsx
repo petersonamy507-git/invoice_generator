@@ -7,6 +7,8 @@ type TextFieldProps = InputHTMLAttributes<HTMLInputElement> & {
   prefix?: string
   /** Show eye toggle for password fields (default true when type="password"). */
   showPasswordToggle?: boolean
+  /** Start with password visible (still toggleable). */
+  defaultPasswordVisible?: boolean
 }
 
 export function TextField({
@@ -17,12 +19,13 @@ export function TextField({
   className = '',
   type = 'text',
   showPasswordToggle,
+  defaultPasswordVisible = false,
   ...props
 }: TextFieldProps) {
   const fieldId = id ?? label.toLowerCase().replace(/[^a-z0-9]+/g, '-')
   const isPassword = type === 'password'
   const canReveal = isPassword && showPasswordToggle !== false
-  const [visible, setVisible] = useState(false)
+  const [visible, setVisible] = useState(defaultPasswordVisible)
   const inputType = canReveal && visible ? 'text' : type
 
   return (

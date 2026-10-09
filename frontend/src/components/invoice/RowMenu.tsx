@@ -1,14 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
 import { MoreIcon } from '../icons'
 
-interface RowMenuProps {
-  onEdit: () => void
-  onRemove: () => void
+export interface RowMenuItem {
+  label: string
+  onClick: () => void
+  danger?: boolean
 }
 
-export function RowMenu({ onEdit, onRemove }: RowMenuProps) {
+interface RowMenuProps {
+  /** Custom menu items (Team page, etc.). */
+  items?: RowMenuItem[]
+  /** Legacy employee shortcuts when `items` is omitted. */
+  onEdit?: () => void
+  onRemove?: () => void
+}
+
+export function RowMenu({ items, onEdit, onRemove }: RowMenuProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
+
+  const menuItems: RowMenuItem[] =
+    items ??
+    [
+      onEdit ? { label: 'Edit record', onClick: onEdit } : null,
+      onRemove ? { label: 'Remove', onClick: onRemove, danger: true } : null,
+    ].filter(Boolean) as RowMenuItem[]
 
   useEffect(() => {
     if (!open) return
@@ -39,27 +55,20 @@ export function RowMenu({ onEdit, onRemove }: RowMenuProps) {
       </button>
       {open ? (
         <div className="row-menu-pop" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false)
-              onEdit()
-            }}
-          >
-            Edit record
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="is-danger"
-            onClick={() => {
-              setOpen(false)
-              onRemove()
-            }}
-          >
-            Remove
-          </button>
+          {menuItems.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className={item.danger ? 'is-danger' : undefined}
+              onClick={() => {
+                setOpen(false)
+                item.onClick()
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
