@@ -56,11 +56,15 @@ from backend.app.services.zip_export import build_zip
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
+
+
 app = FastAPI(
     title="Invoice Generation System",
     version="1.2.0",
     description="Employees, club assignment, Word/PDF invoice generation, and auth.",
 )
+
+
 
 # Cookie auth requires explicit origins (not *). Comma-separated in CORS_ORIGINS.
 _cors_raw = os.getenv(
