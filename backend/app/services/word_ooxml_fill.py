@@ -6,6 +6,7 @@ Used when Microsoft Word COM is not available.
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import tempfile
 import zipfile
@@ -295,27 +296,60 @@ def _fill_three_services(
                 _replace_one(root, sample_amt, _money(tasks[i].amount, cents=cents))
 
 
-def _make_para(text: str, *, bold: bool = False) -> etree._Element:
+def _rpr_verdana(*, bold: bool = False, size_half_points: str = "24") -> etree._Element:
+    """Beecodify uses Verdana; keep it so LibreOffice matches Word glyphs."""
+    rpr = etree.Element(_q("rPr"))
+    if bold:
+        etree.SubElement(rpr, _q("b"))
+    sz = etree.SubElement(rpr, _q("sz"))
+    sz.set(_q("val"), size_half_points)
+    sz_cs = etree.SubElement(rpr, _q("szCs"))
+    sz_cs.set(_q("val"), size_half_points)
+    for tag in ("rFonts",):
+        fonts = etree.SubElement(rpr, _q(tag))
+        fonts.set(_q("ascii"), "Verdana")
+        fonts.set(_q("hAnsi"), "Verdana")
+        fonts.set(_q("cs"), "Verdana")
+    return rpr
+
+
+def _make_para(text: str, *, bold: bool = False, size_half_points: str = "24") -> etree._Element:
     p = etree.Element(_q("p"))
     r = etree.SubElement(p, _q("r"))
-    if bold:
-        rpr = etree.SubElement(r, _q("rPr"))
-        etree.SubElement(rpr, _q("b"))
+    r.append(_rpr_verdana(bold=bold, size_half_points=size_half_points))
     t = etree.SubElement(r, _q("t"))
     _set_text_node(t, text)
     return p
 
 
-def _make_para_multiline(lines: list[str]) -> etree._Element:
+def _make_para_multiline(
+    lines: list[str], *, bold: bool = False, size_half_points: str = "24"
+) -> etree._Element:
     """One paragraph with soft-breaks between lines (LibreOffice-safe)."""
     p = etree.Element(_q("p"))
     for i, line in enumerate(lines):
         if i:
             r_br = etree.SubElement(p, _q("r"))
+            r_br.append(_rpr_verdana(bold=bold, size_half_points=size_half_points))
             etree.SubElement(r_br, _q("br"))
         r = etree.SubElement(p, _q("r"))
+        r.append(_rpr_verdana(bold=bold, size_half_points=size_half_points))
         t = etree.SubElement(r, _q("t"))
         _set_text_node(t, line)
+    return p
+
+
+def _make_labeled_para(label: str, value: str, *, size_half_points: str = "24") -> etree._Element:
+    """'Date: October 13, 2026' with bold label — matches Word COM PDF."""
+    p = etree.Element(_q("p"))
+    r1 = etree.SubElement(p, _q("r"))
+    r1.append(_rpr_verdana(bold=True, size_half_points=size_half_points))
+    t1 = etree.SubElement(r1, _q("t"))
+    _set_text_node(t1, f"{label} ")
+    r2 = etree.SubElement(p, _q("r"))
+    r2.append(_rpr_verdana(bold=True, size_half_points=size_half_points))
+    t2 = etree.SubElement(r2, _q("t"))
+    _set_text_node(t2, value)
     return p
 
 
@@ -325,6 +359,12 @@ def _tc_with_paras(paras: list[etree._Element], width_twips: str) -> etree._Elem
     tc_w = etree.SubElement(tc_pr, _q("tcW"))
     tc_w.set(_q("w"), width_twips)
     tc_w.set(_q("type"), "dxa")
+    # Match Word's visual padding inside Beecodify columns.
+    mar = etree.SubElement(tc_pr, _q("tcMar"))
+    for edge, val in (("top", "0"), ("left", "0"), ("bottom", "0"), ("right", "120")):
+        el = etree.SubElement(mar, _q(edge))
+        el.set(_q("w"), val)
+        el.set(_q("type"), "dxa")
     for p in paras:
         tc.append(p)
     if not paras:
@@ -332,11 +372,40 @@ def _tc_with_paras(paras: list[etree._Element], width_twips: str) -> etree._Elem
     return tc
 
 
-def _flatten_beecodify_columns(root: etree._Element) -> None:
-    """Replace Word newspaper columns with a 2-col table.
+def _split_beecodify_address(addr: str) -> list[str]:
+    """Word wraps Beecodify address as street / city-state-zip."""
+    addr = " ".join(addr.split())
+    m = re.match(r"^(.*?\bST)\s+(.+)$", addr, flags=re.IGNORECASE)
+    if m:
+        return [m.group(1).strip(), m.group(2).strip()]
+    m = re.match(r"^(.+)\s+([A-Z]{2}\s+\d{5}(?:-\d{4})?)$", addr)
+    if m:
+        return [m.group(1).strip(), m.group(2).strip()]
+    return [addr]
 
-    Beecodify uses w:cols + column breaks. Microsoft Word PDF keeps that layout;
-    LibreOffice on Linux/AWS reflows it and looks 'corrupt'. A real table is stable.
+
+def _bank_lines_from_para(bank_p: etree._Element) -> list[str]:
+    """Extract filled bank lines (soft-break separated)."""
+    lines: list[str] = []
+    buf = ""
+    for node in bank_p.iter():
+        if node.tag == _q("br"):
+            lines.append(buf)
+            buf = ""
+            continue
+        if node.tag == _q("t"):
+            buf += node.text or ""
+    lines.append(buf)
+    return [ln.strip() for ln in lines if ln.strip()]
+
+
+def _flatten_beecodify_columns(root: etree._Element, *, invoice_date: date | None) -> None:
+    """Rebuild Beecodify header to match Microsoft Word PDF positions.
+
+    Measured from a correct Word COM PDF:
+      left text ~x=59.5pt, right 'From' ~x=342pt
+    Template page has left/right margin 0 and uses newspaper columns — LibreOffice
+    reflows those columns, so we replace that block with a borderless 2-col table.
     """
     body = root.find(_q("body"))
     if body is None:
@@ -359,10 +428,6 @@ def _flatten_beecodify_columns(root: etree._Element) -> None:
     if not all([date_p is not None, billed_p is not None, company_p is not None, bank_p is not None]):
         return
 
-    # Template puts a column-break before "From:". Word newspaper columns then show:
-    #   LEFT  = Date + Billed to + company/address
-    #   RIGHT = From + bank lines
-    # LibreOffice mishandles those columns; rebuild the same split as a table.
     left_extra: list[str] = []
     right_extra: list[str] = []
     buf = ""
@@ -370,8 +435,7 @@ def _flatten_beecodify_columns(root: etree._Element) -> None:
 
     def _flush() -> None:
         nonlocal buf
-        target = right_extra if saw_from else left_extra
-        target.append(buf)
+        (right_extra if saw_from else left_extra).append(buf)
         buf = ""
 
     for node in company_p.iter():
@@ -385,28 +449,67 @@ def _flatten_beecodify_columns(root: etree._Element) -> None:
         if node.tag == _q("t"):
             buf += node.text or ""
     _flush()
-    left_extra = [ln for ln in left_extra if ln.strip()]
-    right_extra = [ln for ln in right_extra if ln.strip()]
-    if not right_extra:
-        right_extra = ["From:"]
+    left_extra = [ln.strip() for ln in left_extra if ln.strip()]
+    right_extra = [ln.strip() for ln in right_extra if ln.strip()]
+    if not any(x.lower().startswith("from") for x in right_extra):
+        right_extra = ["From:", *right_extra]
 
-    left_paras = [
-        etree.fromstring(etree.tostring(date_p)),
+    # LEFT: Date (one line) + Billed to + company + address lines (Word wrap)
+    left_paras: list[etree._Element] = [
+        _make_labeled_para("Date:", _full_date(invoice_date)),
         _make_para(""),
-        etree.fromstring(etree.tostring(billed_p)),
+        _make_para("Billed to:", bold=True),
     ]
-    if left_extra:
-        left_paras.append(_make_para_multiline(left_extra))
+    for i, ln in enumerate(left_extra):
+        if i == 0:
+            left_paras.append(_make_para(""))
+            left_paras.append(_make_para(ln))
+        else:
+            for part in _split_beecodify_address(ln):
+                left_paras.append(_make_para(part))
 
-    right_paras = [_make_para_multiline(right_extra)]
-    # Bank block already has soft-breaks between labels
-    right_paras.append(etree.fromstring(etree.tostring(bank_p)))
+    # RIGHT: From (bold) + bank lines. Spacer aligns From near "Billed to" (Word ~y=212).
+    right_paras: list[etree._Element] = [_make_para(""), _make_para("")]
+    for ln in right_extra:
+        right_paras.append(_make_para(ln, bold=ln.lower().startswith("from")))
+    for ln in _bank_lines_from_para(bank_p):
+        low = ln.lower()
+        # Soft-wrap long bank lines like Word's narrow right column.
+        if low.startswith("bank name:"):
+            rest = ln.split(":", 1)[-1].strip().split()
+            # Word PDF: "Bank Name: Eos in" / "temporibus q"
+            if len(rest) >= 3:
+                right_paras.append(_make_para(f"Bank Name: {rest[0]} {rest[1]}"))
+                right_paras.append(_make_para(" ".join(rest[2:])))
+                continue
+        if low.startswith("account no:"):
+            val = ln.split(":", 1)[-1].strip()
+            right_paras.append(_make_para("Account NO:"))
+            right_paras.append(_make_para(val))
+            continue
+        if low.startswith("branch code:"):
+            rest = ln.split(":", 1)[-1].strip().split()
+            # Word PDF: "Branch Code: Ut anim" / "conset E"
+            if len(rest) >= 3:
+                right_paras.append(_make_para(f"Branch Code: {rest[0]} {rest[1]}"))
+                right_paras.append(_make_para(" ".join(rest[2:])))
+                continue
+        right_paras.append(_make_para(ln))
+
+    # Page is 11910 twips wide, margins 0. Word places left @59.5pt, From @342pt.
+    left_indent = "1190"  # ~59.5pt
+    left_w = "5650"  # ~282.5pt → right starts ~342pt
+    right_w = "5070"
+    table_w = str(int(left_w) + int(right_w))
 
     tbl = etree.Element(_q("tbl"))
     tbl_pr = etree.SubElement(tbl, _q("tblPr"))
     tbl_w = etree.SubElement(tbl_pr, _q("tblW"))
-    tbl_w.set(_q("w"), "0")
-    tbl_w.set(_q("type"), "auto")
+    tbl_w.set(_q("w"), table_w)
+    tbl_w.set(_q("type"), "dxa")
+    tbl_ind = etree.SubElement(tbl_pr, _q("tblInd"))
+    tbl_ind.set(_q("w"), left_indent)
+    tbl_ind.set(_q("type"), "dxa")
     borders = etree.SubElement(tbl_pr, _q("tblBorders"))
     for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
         b = etree.SubElement(borders, _q(edge))
@@ -415,20 +518,18 @@ def _flatten_beecodify_columns(root: etree._Element) -> None:
         b.set(_q("space"), "0")
         b.set(_q("color"), "auto")
     tbl_grid = etree.SubElement(tbl, _q("tblGrid"))
-    for w in ("4200", "6000"):
+    for w in (left_w, right_w):
         g = etree.SubElement(tbl_grid, _q("gridCol"))
         g.set(_q("w"), w)
 
     tr = etree.SubElement(tbl, _q("tr"))
-    tr.append(_tc_with_paras(left_paras, "4200"))
-    tr.append(_tc_with_paras(right_paras, "6000"))
+    tr.append(_tc_with_paras(left_paras, left_w))
+    tr.append(_tc_with_paras(right_paras, right_w))
 
-    # Insert table where the date block started; remove old column paras + spacer empties between them.
     insert_at = list(body).index(date_p)
     body.insert(insert_at, tbl)
 
     remove = {date_p, billed_p, company_p, bank_p}
-    # Also drop empty spacer paragraphs immediately between those blocks.
     started = False
     for child in list(body):
         if child in remove:
@@ -436,11 +537,8 @@ def _flatten_beecodify_columns(root: etree._Element) -> None:
             body.remove(child)
             continue
         if started and child.tag == _q("p") and not _para_text(child).strip():
-            # stop at next non-empty or table
             nxt = child.getnext()
-            if nxt is not None and (nxt in remove or nxt.tag == _q("tbl")):
-                body.remove(child)
-            elif nxt is tbl:
+            if nxt is not None and (nxt in remove or nxt is tbl or nxt.tag == _q("tbl")):
                 body.remove(child)
             else:
                 break
@@ -449,7 +547,6 @@ def _flatten_beecodify_columns(root: etree._Element) -> None:
         elif started:
             break
 
-    # Disable newspaper columns — LO mishandles them vs Word.
     for sect in root.iter(_q("sectPr")):
         cols = sect.find(_q("cols"))
         if cols is not None:
@@ -493,8 +590,9 @@ def _fill_beecodify(root: etree._Element, data: WordInvoiceData, invoice_date: d
         cents=True,
     )
     _replace_in_text_nodes(root, "$95.00", total, replace_all=True)
-    # Critical for live Linux PDF (LibreOffice): flatten MS newspaper columns.
-    _flatten_beecodify_columns(root)
+    # Critical for live Linux PDF (LibreOffice): flatten MS newspaper columns
+    # into Word-matched left/right positions.
+    _flatten_beecodify_columns(root, invoice_date=invoice_date)
 
 
 def _fill_coretechify(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
