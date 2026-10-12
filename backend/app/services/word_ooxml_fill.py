@@ -295,6 +295,170 @@ def _fill_three_services(
                 _replace_one(root, sample_amt, _money(tasks[i].amount, cents=cents))
 
 
+def _make_para(text: str, *, bold: bool = False) -> etree._Element:
+    p = etree.Element(_q("p"))
+    r = etree.SubElement(p, _q("r"))
+    if bold:
+        rpr = etree.SubElement(r, _q("rPr"))
+        etree.SubElement(rpr, _q("b"))
+    t = etree.SubElement(r, _q("t"))
+    _set_text_node(t, text)
+    return p
+
+
+def _make_para_multiline(lines: list[str]) -> etree._Element:
+    """One paragraph with soft-breaks between lines (LibreOffice-safe)."""
+    p = etree.Element(_q("p"))
+    for i, line in enumerate(lines):
+        if i:
+            r_br = etree.SubElement(p, _q("r"))
+            etree.SubElement(r_br, _q("br"))
+        r = etree.SubElement(p, _q("r"))
+        t = etree.SubElement(r, _q("t"))
+        _set_text_node(t, line)
+    return p
+
+
+def _tc_with_paras(paras: list[etree._Element], width_twips: str) -> etree._Element:
+    tc = etree.Element(_q("tc"))
+    tc_pr = etree.SubElement(tc, _q("tcPr"))
+    tc_w = etree.SubElement(tc_pr, _q("tcW"))
+    tc_w.set(_q("w"), width_twips)
+    tc_w.set(_q("type"), "dxa")
+    for p in paras:
+        tc.append(p)
+    if not paras:
+        tc.append(_make_para(""))
+    return tc
+
+
+def _flatten_beecodify_columns(root: etree._Element) -> None:
+    """Replace Word newspaper columns with a 2-col table.
+
+    Beecodify uses w:cols + column breaks. Microsoft Word PDF keeps that layout;
+    LibreOffice on Linux/AWS reflows it and looks 'corrupt'. A real table is stable.
+    """
+    body = root.find(_q("body"))
+    if body is None:
+        return
+    children = list(body)
+    date_p = billed_p = company_p = bank_p = None
+    for child in children:
+        if child.tag != _q("p"):
+            continue
+        text = _para_text(child)
+        if text.startswith("Date:") or text.startswith("Date: "):
+            date_p = child
+        elif "Billed" in text and "to:" in text and "BEECODIFY" not in text:
+            billed_p = child
+        elif "BEECODIFY" in text or "From:" in text:
+            company_p = child
+        elif "Bank Name" in text:
+            bank_p = child
+
+    if not all([date_p is not None, billed_p is not None, company_p is not None, bank_p is not None]):
+        return
+
+    # Template puts a column-break before "From:". Word newspaper columns then show:
+    #   LEFT  = Date + Billed to + company/address
+    #   RIGHT = From + bank lines
+    # LibreOffice mishandles those columns; rebuild the same split as a table.
+    left_extra: list[str] = []
+    right_extra: list[str] = []
+    buf = ""
+    saw_from = False
+
+    def _flush() -> None:
+        nonlocal buf
+        target = right_extra if saw_from else left_extra
+        target.append(buf)
+        buf = ""
+
+    for node in company_p.iter():
+        if node.tag == _q("br"):
+            if node.get(_q("type")) == "column":
+                _flush()
+                saw_from = True
+                continue
+            _flush()
+            continue
+        if node.tag == _q("t"):
+            buf += node.text or ""
+    _flush()
+    left_extra = [ln for ln in left_extra if ln.strip()]
+    right_extra = [ln for ln in right_extra if ln.strip()]
+    if not right_extra:
+        right_extra = ["From:"]
+
+    left_paras = [
+        etree.fromstring(etree.tostring(date_p)),
+        _make_para(""),
+        etree.fromstring(etree.tostring(billed_p)),
+    ]
+    if left_extra:
+        left_paras.append(_make_para_multiline(left_extra))
+
+    right_paras = [_make_para_multiline(right_extra)]
+    # Bank block already has soft-breaks between labels
+    right_paras.append(etree.fromstring(etree.tostring(bank_p)))
+
+    tbl = etree.Element(_q("tbl"))
+    tbl_pr = etree.SubElement(tbl, _q("tblPr"))
+    tbl_w = etree.SubElement(tbl_pr, _q("tblW"))
+    tbl_w.set(_q("w"), "0")
+    tbl_w.set(_q("type"), "auto")
+    borders = etree.SubElement(tbl_pr, _q("tblBorders"))
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = etree.SubElement(borders, _q(edge))
+        b.set(_q("val"), "nil")
+        b.set(_q("sz"), "0")
+        b.set(_q("space"), "0")
+        b.set(_q("color"), "auto")
+    tbl_grid = etree.SubElement(tbl, _q("tblGrid"))
+    for w in ("4200", "6000"):
+        g = etree.SubElement(tbl_grid, _q("gridCol"))
+        g.set(_q("w"), w)
+
+    tr = etree.SubElement(tbl, _q("tr"))
+    tr.append(_tc_with_paras(left_paras, "4200"))
+    tr.append(_tc_with_paras(right_paras, "6000"))
+
+    # Insert table where the date block started; remove old column paras + spacer empties between them.
+    insert_at = list(body).index(date_p)
+    body.insert(insert_at, tbl)
+
+    remove = {date_p, billed_p, company_p, bank_p}
+    # Also drop empty spacer paragraphs immediately between those blocks.
+    started = False
+    for child in list(body):
+        if child in remove:
+            started = True
+            body.remove(child)
+            continue
+        if started and child.tag == _q("p") and not _para_text(child).strip():
+            # stop at next non-empty or table
+            nxt = child.getnext()
+            if nxt is not None and (nxt in remove or nxt.tag == _q("tbl")):
+                body.remove(child)
+            elif nxt is tbl:
+                body.remove(child)
+            else:
+                break
+        elif started and child is tbl:
+            continue
+        elif started:
+            break
+
+    # Disable newspaper columns — LO mishandles them vs Word.
+    for sect in root.iter(_q("sectPr")):
+        cols = sect.find(_q("cols"))
+        if cols is not None:
+            cols.set(_q("num"), "1")
+            cols.set(_q("space"), "0")
+            for col in list(cols):
+                cols.remove(col)
+
+
 def _fill_beecodify(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
@@ -302,7 +466,16 @@ def _fill_beecodify(root: etree._Element, data: WordInvoiceData, invoice_date: d
     if inv:
         _replace_all(root, "NO. 000001", f"NO. {inv}")
         _replace_all(root, "000001", inv)
-    _replace_all(root, "September 15, 2030", _full_date(invoice_date))
+    # Keep "Date:" run intact (template splits month/day/year across runs).
+    new_date = _full_date(invoice_date)
+    d = invoice_date or date.today()
+    if not (
+        _replace_in_text_nodes(root, "September", f" {d.strftime('%B')}", replace_all=False)
+        and _replace_in_text_nodes(root, "15,", f"{d.day},", replace_all=False)
+        and _replace_in_text_nodes(root, "2030", str(d.year), replace_all=False)
+    ):
+        _replace_all(root, "September 15, 2030", new_date)
+    # Match Word COM soft-break bank block (preserves line breaks for LibreOffice).
     _fill_label(root, "Bank Name", bank)
     _fill_label(root, "Account Name", name)
     # "Account" + " NO" are separate runs in the Beecodify template
@@ -320,6 +493,8 @@ def _fill_beecodify(root: etree._Element, data: WordInvoiceData, invoice_date: d
         cents=True,
     )
     _replace_in_text_nodes(root, "$95.00", total, replace_all=True)
+    # Critical for live Linux PDF (LibreOffice): flatten MS newspaper columns.
+    _flatten_beecodify_columns(root)
 
 
 def _fill_coretechify(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:

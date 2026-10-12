@@ -106,6 +106,8 @@ Deploy checklist:
 | Windows (local) | Microsoft Word COM | Word COM |
 | AWS Linux (live) | OOXML zip edit (keeps drawings) | LibreOffice headless |
 
+**Why live PDF looked “corrupt” (Beecodify #11):** local Windows uses **Word** for PDF; live Linux uses **LibreOffice**. Beecodify’s newspaper columns + column-breaks reflow differently in LibreOffice. Latest `word_ooxml_fill.py` flattens that header into a normal 2-column table before PDF so live matches local. **Redeploy that file** and restart the API.
+
 ---
 
 ## 2. Frontend on another system (Vite) — call this PC’s API
