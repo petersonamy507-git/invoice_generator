@@ -37,7 +37,6 @@ export function TeamPage() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [formError, setFormError] = useState('')
-  const [revealPassword, setRevealPassword] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -96,11 +95,10 @@ export function TeamPage() {
     setMode('edit')
   }
 
-  const openPassword = (row: ApiUser, showPlain = false) => {
+  const openPassword = (row: ApiUser) => {
     setEditing(row)
     setPassword('')
     setConfirmPassword('')
-    setRevealPassword(showPlain)
     setFormError('')
     setMode('password')
   }
@@ -225,8 +223,7 @@ export function TeamPage() {
                       <RowMenu
                         items={[
                           { label: 'Edit', onClick: () => openEdit(row) },
-                          { label: 'Password', onClick: () => openPassword(row, false) },
-                          { label: 'Show password', onClick: () => openPassword(row, true) },
+                          { label: 'Reset password', onClick: () => openPassword(row) },
                           { label: 'Delete', onClick: () => void removeUser(row), danger: true },
                         ]}
                       />
@@ -258,8 +255,7 @@ export function TeamPage() {
                           <RowMenu
                             items={[
                               { label: 'Edit', onClick: () => openEdit(row) },
-                              { label: 'Password', onClick: () => openPassword(row, false) },
-                              { label: 'Show password', onClick: () => openPassword(row, true) },
+                              { label: 'Reset password', onClick: () => openPassword(row) },
                               { label: 'Delete', onClick: () => void removeUser(row), danger: true },
                             ]}
                           />
@@ -315,28 +311,26 @@ export function TeamPage() {
               <>
                 {mode === 'password' ? (
                   <p className="hint" style={{ gridColumn: '1 / -1', margin: 0 }}>
-                    Saved passwords are hashed and cannot be recovered. Set a new password below
-                    {revealPassword ? ' (shown as you type)' : ''}. Use the eye icon to show/hide.
+                    Saved passwords are hashed and cannot be recovered. Set a new password and confirm
+                    it below. Use the eye icon on either field to show/hide.
                   </p>
                 ) : null}
                 <TextField
-                  key={`pw-${revealPassword}-${editing?.id ?? 'new'}`}
+                  key={`pw-${editing?.id ?? 'new'}`}
                   label="Password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete="new-password"
-                  defaultPasswordVisible={revealPassword}
                   required
                 />
                 <TextField
-                  key={`pwc-${revealPassword}-${editing?.id ?? 'new'}`}
+                  key={`pwc-${editing?.id ?? 'new'}`}
                   label="Confirm password"
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   autoComplete="new-password"
-                  defaultPasswordVisible={revealPassword}
                   required
                 />
               </>
