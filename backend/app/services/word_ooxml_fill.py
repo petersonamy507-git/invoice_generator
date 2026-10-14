@@ -922,13 +922,19 @@ def _fill_bravix(root: etree._Element, data: WordInvoiceData, invoice_date: date
     _replace_all(root, "$95.00", total)
 
 
+def _ravotek_date(invoice_date: date | None) -> str:
+    """Real Ravotek date style: '11 . 02 . 2030' (DD . MM . YYYY)."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d} . {d.month:02d} . {d.year}"
+
+
 def _fill_ravotek(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount)
     if inv:
         _replace_all(root, "01234", inv)
-    _replace_all(root, "11 . 02 . 2030", _short_date(invoice_date))
+    _replace_all(root, "11 . 02 . 2030", _ravotek_date(invoice_date))
     # Services live in the DESCRIPTION table (not the INVOICE NO header tables).
     for tbl in _tables_matching(root, "Property Valuation", "Professional Photography"):
         _delete_rows(tbl, [6, 5, 4])  # drop sample rows 4–6; keep header + 3 items
@@ -1148,35 +1154,156 @@ def _fill_alpha(root: etree._Element, data: WordInvoiceData, invoice_date: date 
                 _set_cell_text(tbl, row, len(cells) - 1, _money(tasks[i].amount))
 
 
+def _synergo_slash_date(invoice_date: date | None) -> str:
+    """Invoice date style: '01 / 02 / 2023'."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d} / {d.month:02d} / {d.year}"
+
+
+def _synergo_pay_by_date(invoice_date: date | None) -> str:
+    """Pay by style: '23 June 2023'."""
+    d = invoice_date or date.today()
+    return f"{d.day} {d.strftime('%B')} {d.year}"
+
+
+def _synergo_total_sz(total: str) -> str:
+    """Half-points for Total line so amount stays on one line in the narrow column."""
+    n = len(total)
+    if n <= 5:
+        return "36"  # original 18pt
+    if n <= 7:
+        return "28"
+    if n <= 9:
+        return "22"
+    return "18"
+
+
+def _synergo_rebuild_total_para(p: etree._Element, total: str) -> None:
+    """Keep Total\\t$amount on one line (original layout); shrink font for long totals."""
+    for child in list(p):
+        if child.tag != _q("pPr"):
+            p.remove(child)
+    sz = _synergo_total_sz(total)
+
+    def _add(*, text: str | None = None, tab: bool = False) -> None:
+        r = etree.SubElement(p, _q("r"))
+        rpr = etree.SubElement(r, _q("rPr"))
+        fonts = etree.SubElement(rpr, _q("rFonts"))
+        fonts.set(_q("ascii"), "Tahoma")
+        etree.SubElement(rpr, _q("b"))
+        sz_el = etree.SubElement(rpr, _q("sz"))
+        sz_el.set(_q("val"), sz)
+        sz_cs = etree.SubElement(rpr, _q("szCs"))
+        sz_cs.set(_q("val"), sz)
+        if tab:
+            etree.SubElement(r, _q("tab"))
+            return
+        spacing = etree.SubElement(rpr, _q("spacing"))
+        spacing.set(_q("val"), "-2" if text == "Total" else "-4")
+        t = etree.SubElement(r, _q("t"))
+        _set_text_node(t, text or "")
+
+    _add(text="Total")
+    _add(tab=True)
+    _add(text=total)
+
+
+def _synergo_rebuild_account_para(p: etree._Element, name: str, iban: str) -> None:
+    """Match original PDF lines: Account Name, then Account No. (soft-break)."""
+    first_rpr = None
+    for r in p.findall(_q("r")):
+        rpr = r.find(_q("rPr"))
+        if rpr is not None and r.find(_q("t")) is not None:
+            first_rpr = etree.fromstring(etree.tostring(rpr))
+            break
+    for child in list(p):
+        if child.tag in (_q("r"), _q("hyperlink")):
+            p.remove(child)
+
+    def _add(text: str, *, br: bool = False) -> None:
+        r = etree.SubElement(p, _q("r"))
+        if first_rpr is not None:
+            r.append(etree.fromstring(etree.tostring(first_rpr)))
+        if br:
+            etree.SubElement(r, _q("br"))
+            return
+        t = etree.SubElement(r, _q("t"))
+        _set_text_node(t, text)
+
+    _add(f"Account Name: {name}")
+    _add("", br=True)
+    _add(f"Account No.: {iban}")
+
+
 def _fill_synergo(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
+    """Invoice14 — Synergo Incdocx (Invoice to / qty-price table / PAYMENT METHOD)."""
     inv = data.document_invoice_no or ""
-    bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
-    total = _money(data.total_amount, cents=True)
+    bank, name, iban = data.bank or "", data.person_name or "", data.iban or ""
+    total = _money(data.total_amount)
     if inv:
-        _replace_all(root, "150305", inv)
-    _replace_all(root, "March 15, 2025", _full_date(invoice_date))
-    _replace_all(root, "Bank Name:", f"Bank Name: {bank}")
-    _replace_all(root, "Account Name:", f"Account Name: {name}")
-    _replace_all(root, "Account No:", f"Account No: {iban}")
-    _replace_all(root, "Branch Code:", f"Branch Code: {branch}")
-    _replace_all(root, "Ruby", name)
+        _replace_all(root, "52131", inv)
+    _replace_all(root, "01 / 02 / 2023", _synergo_slash_date(invoice_date))
+    _replace_all(root, "23 June 2023", _synergo_pay_by_date(invoice_date))
+    _replace_all(root, "Rimberio Bank", bank)
+    account_paras = [
+        p
+        for p in root.iter(_q("p"))
+        if "Account Name" in _para_text(p) and "Account No" in _para_text(p)
+    ]
+    if account_paras:
+        for p in account_paras:
+            _synergo_rebuild_account_para(p, name, iban)
+    else:
+        _replace_all(root, "Alfredo Torres", name)
+        _replace_all(root, "0123 4567 8901", iban)
+    tasks = list(data.tasks[:3]) if data.tasks else []
     tables = _tables(root)
-    if tables and data.tasks and len(data.tasks) >= 3:
-        tbl = tables[0]
-        for task, row in zip(data.tasks[:3], (1, 4, 6)):
+    item_tables = _tables_matching(root, "Unit Price", "Quantity")
+    if not item_tables and len(tables) >= 2:
+        item_tables = [tables[1]]
+    if tasks and item_tables:
+        tbl = item_tables[0]
+        rows = _table_rows(tbl)
+        for i, task in enumerate(tasks):
+            row = i + 1
+            if row >= len(rows):
+                break
+            amt = _money(task.amount)
             _set_cell_text(tbl, row, 0, task.sub_task)
-        for task, row in zip(data.tasks[:3], (2, 5, 7)):
-            cells = [c for c in _table_rows(tbl)[row] if c.tag == _q("tc")]
+            cells = [c for c in rows[row] if c.tag == _q("tc")]
+            if len(cells) >= 2:
+                _set_cell_text(tbl, row, 1, "1")
+            if len(cells) >= 3:
+                _set_cell_text(tbl, row, 2, amt)
             if len(cells) >= 4:
-                _set_cell_text(tbl, row, 3, _money(task.amount))
-    _replace_all(root, "$0,000.00", total)
-    if len(tables) >= 2:
-        t2 = tables[1]
-        rows = _table_rows(t2)
+                _set_cell_text(tbl, row, 3, amt)
         if rows:
-            cells = [c for c in rows[0] if c.tag == _q("tc")]
-            if cells:
-                _set_cell_text(t2, 0, len(cells) - 1, total)
+            last = rows[-1]
+            blob = "".join(_para_text(p) for p in last.iter(_q("p")))
+            if "Subtotal" in blob:
+                cells = [c for c in last if c.tag == _q("tc")]
+                if cells:
+                    _set_cell_text(tbl, len(rows) - 1, len(cells) - 1, total)
+    else:
+        _fill_three_services(
+            root,
+            data,
+            sample_names=[
+                "A4 Paper (75gr/m2)",
+                "Pencil (12ea/box)",
+                "Ruler",
+            ],
+            sample_amounts=["$200", "$75", "$10"],
+            cents=False,
+        )
+    # Subtotal cell still has sample $285 when tasks path didn't set it.
+    _replace_all(root, "$285", total)
+    # Rebuild Total so long amounts stay on one line with the label (original look).
+    for p in root.iter(_q("p")):
+        text = _para_text(p)
+        if text.strip().lower().startswith("total") and "$" in text:
+            _synergo_rebuild_total_para(p, total)
+            break
 
 
 def _set_ignitai_bank_para(

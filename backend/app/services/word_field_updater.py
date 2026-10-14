@@ -1,6 +1,7 @@
 import re
 
 from docx import Document
+from docx.shared import Pt
 
 from backend.app.models import InvoiceTask, WordInvoiceData
 from backend.app.services.amount_distribution import distribute_amounts
@@ -957,51 +958,72 @@ def _update_template_13_alpha(doc: Document, data: WordInvoiceData) -> None:
 
 
 def _update_template_14_synergo(doc: Document, data: WordInvoiceData) -> None:
-    if data.bank or data.iban or data.branch_code or data.person_name:
-        _update_payment_fields(doc, data)
-    if not doc.tables or not data.tasks or len(data.tasks) < 3:
-        return
-    table = doc.tables[0]
-    # Title rows 1/4/6 hold the three club items; detail rows get amounts.
-    title_rows = [1, 4, 6]
-    detail_rows = [2, 5, 7]
-    for i, (title_i, detail_i) in enumerate(zip(title_rows, detail_rows)):
-        task = data.tasks[i]
-        if title_i < len(table.rows) and table.rows[title_i].cells:
-            _set_cell_text(table.rows[title_i].cells[0], task.sub_task)
-        if detail_i < len(table.rows):
-            row = table.rows[detail_i]
+    """Synergo Incdocx: Invoice# 52131, slash date, qty/price rows, PAYMENT METHOD."""
+    from datetime import date as _date
+
+    config = line_item_config(14)
+    amount_str = format_amount(data.total_amount)
+    bank = data.bank or ""
+    name = data.person_name or ""
+    iban = data.iban or ""
+    if data.document_invoice_no and doc.tables:
+        hdr = doc.tables[0]
+        if hdr.rows and len(hdr.rows[0].cells) > 2:
+            _set_cell_text(hdr.rows[0].cells[2], data.document_invoice_no)
+    d = _date.today()
+    slash = f"{d.day:02d} / {d.month:02d} / {d.year}"
+    pay_by = f"{d.day} {d.strftime('%B')} {d.year}"
+    if doc.tables and len(doc.tables[0].rows) > 1 and len(doc.tables[0].rows[1].cells) > 2:
+        _set_cell_text(doc.tables[0].rows[1].cells[2], slash)
+    for paragraph in doc.paragraphs:
+        text = paragraph.text
+        if "Rimberio Bank" in text:
+            _replace_paragraph_text(paragraph, text.replace("Rimberio Bank", bank))
+        elif "Alfredo Torres" in text or (
+            "Account Name" in text and "Account No" in text
+        ):
+            # Soft newline so Account Name / Account No. match original PDF lines.
+            _replace_paragraph_text(
+                paragraph, f"Account Name: {name}\nAccount No.: {iban}"
+            )
+        elif "23 June 2023" in text:
+            _replace_paragraph_text(paragraph, text.replace("23 June 2023", pay_by))
+        elif text.strip().lower().startswith("total") and "$" in text:
+            if "\t" in text:
+                _replace_paragraph_text(paragraph, f"Total\t{amount_str}")
+            else:
+                _replace_paragraph_text(paragraph, f"Total{amount_str}")
+            # Shrink long totals so they stay on one line with the label.
+            if len(amount_str) > 5:
+                for run in paragraph.runs:
+                    try:
+                        n = len(amount_str)
+                        pt = 14 if n <= 7 else (11 if n <= 9 else 9)
+                        run.font.size = Pt(pt)
+                        run.font.bold = True
+                    except Exception:
+                        pass
+    if len(doc.tables) > config.table_index and data.tasks and len(data.tasks) >= 3:
+        table = doc.tables[config.table_index]
+        for i, task in enumerate(data.tasks[:3]):
+            row_i = config.line_item_rows[i] if i < len(config.line_item_rows) else None
+            if row_i is None or row_i >= len(table.rows):
+                continue
+            row = table.rows[row_i]
             if row.cells:
-                _set_cell_text(row.cells[0], "")
+                _set_cell_text(row.cells[0], task.sub_task)
+            if len(row.cells) > 1:
+                _set_cell_text(row.cells[1], "1")
+            amt = format_amount(task.amount)
+            if len(row.cells) > 2:
+                _set_cell_text(row.cells[2], amt)
             if len(row.cells) > 3:
-                _set_cell_all_amounts(row.cells[3], task.amount)
-    # Clear decorative middle row
-    if len(table.rows) > 3:
-        for cell in table.rows[3].cells:
-            _set_cell_text(cell, "")
-    if len(doc.tables) > 1 and doc.tables[1].rows:
-        _set_cell_all_amounts(doc.tables[1].rows[0].cells[-1], data.total_amount)
-    if data.document_invoice_no:
-        for i, paragraph in enumerate(doc.paragraphs):
-            if "invoice number" in paragraph.text.lower():
-                # value often on next paragraph
-                if i + 2 < len(doc.paragraphs) and doc.paragraphs[i + 2].text.strip().isdigit():
-                    _replace_paragraph_text(
-                        doc.paragraphs[i + 2], data.document_invoice_no
-                    )
-                elif not paragraph.text.strip().endswith((":", ": ")):
-                    _replace_labeled_line_value(
-                        paragraph, "Invoice Number", data.document_invoice_no
-                    )
-                else:
-                    # keep label; put value on following numeric para if present
-                    for j in range(i + 1, min(i + 4, len(doc.paragraphs))):
-                        if doc.paragraphs[j].text.strip():
-                            _replace_paragraph_text(
-                                doc.paragraphs[j], data.document_invoice_no
-                            )
-                            break
-                break
+                _set_cell_text(row.cells[3], amt)
+        last = table.rows[-1]
+        if "Subtotal" in last.cells[0].text or (
+            len(last.cells) > 1 and "Subtotal" in last.cells[1].text
+        ):
+            _set_cell_all_amounts(last.cells[-1], data.total_amount)
 
 
 def update_invoice_fields(doc: Document, data: WordInvoiceData) -> None:

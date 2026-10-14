@@ -78,11 +78,12 @@ LINE_ITEM_CONFIGS: dict[int, LineItemConfig] = {
         desc_col=0,
         amount_col=3,
     ),
+    # Synergo Incdocx: Item / Quantity / Unit Price / Total (+ header invoice table 0).
     14: LineItemConfig(
-        table_index=0,
-        line_item_rows=[1, 4, 6],
+        table_index=1,
+        line_item_rows=[1, 2, 3],
         desc_col=0,
-        amount_col=0,
+        amount_col=3,
     ),
 }
 

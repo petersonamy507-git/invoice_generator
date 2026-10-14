@@ -189,6 +189,12 @@ def _fill_three_service_rows(
 # ----- per-template fillers (original DOCX layouts) -----
 
 
+def _ravotek_date(invoice_date: date | None) -> str:
+    """Real Ravotek date style: '11 . 02 . 2030' (DD . MM . YYYY)."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d} . {d.month:02d} . {d.year}"
+
+
 def _fill_ravotek(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     # Invoice06 — 6 sample rows; keep 3, delete 4–6.
     inv = data.document_invoice_no or ""
@@ -196,7 +202,7 @@ def _fill_ravotek(doc, data: WordInvoiceData, invoice_date: date | None) -> None
     total = _money(data.total_amount)
     if inv:
         _replace_all(doc, "01234", inv)
-    _replace_all(doc, "11 . 02 . 2030", _short_date(invoice_date))
+    _replace_all(doc, "11 . 02 . 2030", _ravotek_date(invoice_date))
     if doc.Tables.Count >= 1:
         _delete_table_rows(doc.Tables(1), [7, 6, 5])  # rows 5–7 were sample 4–6 (1=header)
     _replace_all(doc, "Account Name: Daniel Gallego", f"Account Name: {name}")
@@ -707,30 +713,99 @@ def _fill_alpha(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
             _set_cell_text(table, row_1, table.Columns.Count, _money(tasks[i].amount))
 
 
+def _synergo_slash_date(invoice_date: date | None) -> str:
+    """Invoice date style: '01 / 02 / 2023'."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d} / {d.month:02d} / {d.year}"
+
+
+def _synergo_pay_by_date(invoice_date: date | None) -> str:
+    """Pay by style: '23 June 2023'."""
+    d = invoice_date or date.today()
+    return f"{d.day} {d.strftime('%B')} {d.year}"
+
+
+def _synergo_total_font_pt(total: str) -> float:
+    """Point size so Total + amount stay on one line in the narrow right column."""
+    n = len(total)
+    if n <= 5:
+        return 18.0
+    if n <= 7:
+        return 14.0
+    if n <= 9:
+        return 11.0
+    return 9.0
+
+
 def _fill_synergo(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
+    """Invoice14 — Synergo Incdocx (Invoice to / qty-price table / PAYMENT METHOD)."""
     inv = data.document_invoice_no or ""
-    bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
-    total = _money(data.total_amount, cents=True)
+    bank, name, iban = data.bank or "", data.person_name or "", data.iban or ""
+    total = _money(data.total_amount)
     if inv:
-        _replace_all(doc, "150305", inv)
-    _replace_all(doc, "March 15, 2025", _full_date(invoice_date))
-    _replace_all(doc, "Bank Name:", f"Bank Name: {bank}")
-    _replace_all(doc, "Account Name:", f"Account Name: {name}")
-    _replace_all(doc, "Account No:", f"Account No: {iban}")
-    _replace_all(doc, "Branch Code:", f"Branch Code: {branch}")
-    # Person name sample "Ruby"
-    _replace_all(doc, "Ruby", name)
-    if data.tasks and len(data.tasks) >= 3 and doc.Tables.Count >= 1:
-        table = doc.Tables(1)
-        for task, row in zip(data.tasks[:3], (2, 5, 7)):
-            if row <= table.Rows.Count:
-                _set_cell_text(table, row, 1, task.sub_task)
-        for task, row in zip(data.tasks[:3], (3, 6, 8)):
-            if row <= table.Rows.Count and table.Columns.Count >= 4:
-                _set_cell_text(table, row, 4, _money(task.amount))
-    _replace_all(doc, "$0,000.00", total)
-    if doc.Tables.Count >= 2:
-        _set_cell_text(doc.Tables(2), 1, doc.Tables(2).Columns.Count, total)
+        _replace_all(doc, "52131", inv)
+    _replace_all(doc, "01 / 02 / 2023", _synergo_slash_date(invoice_date))
+    _replace_all(doc, "23 June 2023", _synergo_pay_by_date(invoice_date))
+    _replace_all(doc, "Rimberio Bank", bank)
+    # Soft-break so Account Name / Account No. match original PDF line layout.
+    if not _replace_all(
+        doc,
+        "Account Name: Alfredo Torres Account No.: 0123 4567 8901",
+        f"Account Name: {name}^lAccount No.: {iban}",
+    ):
+        _replace_all(doc, "Alfredo Torres", name)
+        _replace_all(doc, "0123 4567 8901", iban)
+    tasks = list(data.tasks[:3]) if data.tasks else []
+    if tasks and doc.Tables.Count >= 2:
+        table = doc.Tables(2)
+        for i, task in enumerate(tasks):
+            row = i + 2
+            if row > table.Rows.Count:
+                break
+            amt = _money(task.amount)
+            _set_cell_text(table, row, 1, task.sub_task)
+            if table.Columns.Count >= 2:
+                _set_cell_text(table, row, 2, "1")
+            if table.Columns.Count >= 3:
+                _set_cell_text(table, row, 3, amt)
+            if table.Columns.Count >= 4:
+                _set_cell_text(table, row, 4, amt)
+        # Subtotal is the last row of the items table.
+        try:
+            last = table.Rows.Count
+            _set_cell_text(table, last, table.Columns.Count, total)
+        except Exception:
+            pass
+    else:
+        _fill_three_service_rows(
+            doc,
+            data,
+            sample_names=[
+                "A4 Paper (75gr/m2)",
+                "Pencil (12ea/box)",
+                "Ruler",
+            ],
+            sample_amounts=["$200", "$75", "$10"],
+            cents=False,
+        )
+    sample_total = "$" + "285"
+    _replace_all(doc, sample_total, total)
+    # Total paragraph: label + tab + amount on one line (match original).
+    for i in range(1, doc.Paragraphs.Count + 1):
+        para = doc.Paragraphs(i)
+        raw = para.Range.Text.replace("\r", "").replace("\x07", "")
+        if raw.strip().lower().startswith("total") and (
+            sample_total in raw or total in raw or "$" in raw
+        ):
+            rng = para.Range.Duplicate
+            rng.MoveEnd(1, -1)
+            rng.Text = f"Total\t{total}"
+            try:
+                rng.Font.Bold = True
+                rng.Font.Size = _synergo_total_font_pt(total)
+            except Exception:
+                pass
+            break
 
 
 def _com_fill_document(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
