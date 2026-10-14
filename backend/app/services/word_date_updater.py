@@ -232,15 +232,23 @@ def update_invoice3_dates(
     new_date = format_invoice_date(invoice_date)
     updated = 0
 
-    if len(doc.paragraphs) > 12:
-        paragraph = doc.paragraphs[12]
-        if not _is_layout_only_text(paragraph.text):
-            lead, core, trail = _split_outer_whitespace(paragraph.text)
+    # Template keeps label and value on separate paragraphs: "INVOICE DATE:" then "17 March 2025".
+    for i, paragraph in enumerate(doc.paragraphs):
+        label = paragraph.text.strip().rstrip(":").strip().upper()
+        if label != "INVOICE DATE":
+            continue
+        for j in range(i + 1, min(i + 4, len(doc.paragraphs))):
+            target = doc.paragraphs[j]
+            if _is_layout_only_text(target.text):
+                continue
+            lead, core, trail = _split_outer_whitespace(target.text)
             if DATE_VALUE.search(core):
                 new_core, changed = _replace_date_in_text(core, new_date)
                 if changed:
-                    _replace_paragraph_text(paragraph, lead + new_core + trail)
+                    _replace_paragraph_text(target, lead + new_core + trail)
                     updated += 1
+            break
+        break
 
     if len(doc.tables) > 3:
         cell = doc.tables[3].rows[0].cells[0]

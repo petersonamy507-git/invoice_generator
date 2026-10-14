@@ -43,8 +43,35 @@ def _short_date(invoice_date: date | None) -> str:
     return format_invoice_date(invoice_date)
 
 
+def _is_nested_object(tag: str) -> bool:
+    """Drawing/VML/ActiveX subtrees embed their own paragraphs — never walk into them."""
+    if tag in (_q("drawing"), _q("pict"), _q("object"), _q("objectLink")):
+        return True
+    # mc:AlternateContent wraps DrawingML + VML fallback textboxes
+    return tag.endswith("}AlternateContent") or tag.endswith("}drawing") or tag.endswith(
+        "}pict"
+    )
+
+
+def _iter_para_text_nodes(p: etree._Element):
+    """Yield w:t / w:br that belong to this paragraph's runs only (not nested textboxes)."""
+
+    def walk(el: etree._Element):
+        for child in el:
+            if _is_nested_object(child.tag):
+                continue
+            if child.tag in (_q("t"), _q("br")):
+                yield child
+            else:
+                yield from walk(child)
+
+    yield from walk(p)
+
+
 def _para_text(p: etree._Element) -> str:
-    return "".join(t.text or "" for t in p.iter(_q("t")))
+    return "".join(
+        (t.text or "") for t in _iter_para_text_nodes(p) if t.tag == _q("t")
+    )
 
 
 def _set_text_node(t: etree._Element, new_text: str) -> None:
@@ -57,7 +84,7 @@ def _set_text_node(t: etree._Element, new_text: str) -> None:
 
 
 def _set_para_text(p: etree._Element, new_text: str) -> None:
-    texts = list(p.iter(_q("t")))
+    texts = [t for t in _iter_para_text_nodes(p) if t.tag == _q("t")]
     if not texts:
         r = etree.SubElement(p, _q("r"))
         t = etree.SubElement(r, _q("t"))
@@ -69,10 +96,15 @@ def _set_para_text(p: etree._Element, new_text: str) -> None:
 
 
 def _line_segments(p: etree._Element) -> list[list[etree._Element]]:
-    """Group w:t nodes by soft-break lines so replaces never collapse w:br."""
+    """Group w:t nodes by soft-break lines so replaces never collapse w:br.
+
+    Skips DrawingML/VML textboxes nested inside the paragraph (Ravotek/Cozy
+    invoice-NO boxes). Walking into those with p.iter() used to flatten the
+    whole textbox into one run and hide invoice# in LibreOffice/Word PDF.
+    """
     segments: list[list[etree._Element]] = []
     current: list[etree._Element] = []
-    for node in p.iter():
+    for node in _iter_para_text_nodes(p):
         if node.tag == _q("t"):
             current.append(node)
         elif node.tag == _q("br"):
@@ -263,6 +295,25 @@ def _set_cell_text(tbl: etree._Element, row_0: int, col_0: int, text: str) -> No
     if target is None:
         target = etree.SubElement(cell, _q("p"))
     _set_para_text(target, text if text != "" else " ")
+
+
+def _set_cell_text_exclusive(tbl: etree._Element, row_0: int, col_0: int, text: str) -> None:
+    """Set cell text and blank every other paragraph (multi-label total rows)."""
+    rows = _table_rows(tbl)
+    if row_0 < 0 or row_0 >= len(rows):
+        return
+    cells = [c for c in rows[row_0] if c.tag == _q("tc")]
+    if col_0 < 0 or col_0 >= len(cells):
+        return
+    cell = cells[col_0]
+    paras = [p for p in cell.iter(_q("p"))]
+    if not paras:
+        p = etree.SubElement(cell, _q("p"))
+        _set_para_text(p, text if text != "" else " ")
+        return
+    _set_para_text(paras[0], text if text != "" else " ")
+    for p in paras[1:]:
+        _set_para_text(p, "")
 
 
 def _fill_three_services(
@@ -595,6 +646,186 @@ def _fill_beecodify(root: etree._Element, data: WordInvoiceData, invoice_date: d
     _flatten_beecodify_columns(root, invoice_date=invoice_date)
 
 
+def _split_coretechify_address(addr: str) -> list[str]:
+    """Word wraps Coretechify address as street / city-state / zip."""
+    addr = " ".join(addr.split())
+    m = re.match(
+        r"^(.*?\b(?:BLVD|ST|AVE|RD|DR))\s+(.+?),\s*([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$",
+        addr,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        return [
+            m.group(1).strip(),
+            f"{m.group(2).strip()}, {m.group(3).strip()}",
+            m.group(4).strip(),
+        ]
+    m = re.match(r"^(.+)\s+([A-Z]{2}\s+\d{5}(?:-\d{4})?)$", addr)
+    if m:
+        return [m.group(1).strip(), m.group(2).strip()]
+    return [addr]
+
+
+def _flatten_coretechify_columns(
+    root: etree._Element,
+    *,
+    invoice_date: date | None,
+    invoice_no: str,
+) -> None:
+    """Flatten newspaper columns so LibreOffice matches Word left/right layout.
+
+    Word positions (from real COM PDF): left ~x=59.5pt, right ~x=342pt.
+    """
+    body = root.find(_q("body"))
+    if body is None:
+        return
+    children = list(body)
+    date_label_p = date_val_p = invoice_p = billed_p = company_p = bank_p = None
+    for child in children:
+        if child.tag != _q("p"):
+            continue
+        text = _para_text(child)
+        if text.strip() == "Date:":
+            date_label_p = child
+        elif date_label_p is not None and date_val_p is None and text.strip() and "Billed" not in text and "INVOICE" not in text.upper():
+            # Next non-empty after Date: is the date value (may carry a column break).
+            if re.search(r"\d{4}", text) or any(
+                m in text for m in ("January", "February", "March", "April", "May", "June",
+                                    "July", "August", "September", "October", "November", "December")
+            ):
+                date_val_p = child
+        elif text.upper().startswith("INVOICE NO"):
+            invoice_p = child
+        elif "Billed" in text and "to:" in text:
+            billed_p = child
+        elif "CORETECHIFY" in text.upper() or ("From:" in text and "Bank" not in text):
+            company_p = child
+        elif "Bank Name" in text:
+            bank_p = child
+
+    if date_label_p is None or billed_p is None or company_p is None or bank_p is None:
+        return
+
+    left_lines: list[str] = []
+    right_head: list[str] = []
+    buf = ""
+    saw_from = False
+    for node in company_p.iter():
+        if node.tag == _q("br"):
+            chunk = buf.strip()
+            if node.get(_q("type")) == "column":
+                if chunk:
+                    left_lines.append(chunk)
+                buf = ""
+                saw_from = True
+                continue
+            if chunk:
+                (right_head if saw_from else left_lines).append(chunk)
+            buf = ""
+            continue
+        if node.tag == _q("t"):
+            buf += node.text or ""
+    tail = buf.strip()
+    if tail:
+        (right_head if saw_from else left_lines).append(tail)
+    if not any(x.lower().startswith("from") for x in right_head):
+        right_head = ["From:", *right_head]
+
+    company = left_lines[0] if left_lines else "CORETECHIFY INC"
+    addr_parts: list[str] = []
+    for ln in left_lines[1:]:
+        addr_parts.extend(_split_coretechify_address(ln))
+
+    inv = invoice_no or "000001"
+    left_paras: list[etree._Element] = [
+        _make_labeled_para("Date:", _full_date(invoice_date)),
+        _make_para(""),
+        _make_para("Billed to:", bold=True),
+        _make_para(""),
+        _make_para(company),
+    ]
+    for part in addr_parts:
+        left_paras.append(_make_para(part))
+
+    right_paras: list[etree._Element] = [
+        _make_para(f"INVOICE NO. {inv}"),
+        _make_para(""),
+    ]
+    for ln in right_head:
+        right_paras.append(_make_para(ln, bold=ln.lower().startswith("from")))
+    for ln in _bank_lines_from_para(bank_p):
+        right_paras.append(_make_para(ln))
+
+    left_indent = "1190"  # ~59.5pt
+    left_w = "5650"
+    right_w = "5070"
+    table_w = str(int(left_w) + int(right_w))
+
+    tbl = etree.Element(_q("tbl"))
+    tbl_pr = etree.SubElement(tbl, _q("tblPr"))
+    tbl_w = etree.SubElement(tbl_pr, _q("tblW"))
+    tbl_w.set(_q("w"), table_w)
+    tbl_w.set(_q("type"), "dxa")
+    tbl_ind = etree.SubElement(tbl_pr, _q("tblInd"))
+    tbl_ind.set(_q("w"), left_indent)
+    tbl_ind.set(_q("type"), "dxa")
+    borders = etree.SubElement(tbl_pr, _q("tblBorders"))
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = etree.SubElement(borders, _q(edge))
+        b.set(_q("val"), "nil")
+        b.set(_q("sz"), "0")
+        b.set(_q("space"), "0")
+        b.set(_q("color"), "auto")
+    tbl_grid = etree.SubElement(tbl, _q("tblGrid"))
+    for w in (left_w, right_w):
+        g = etree.SubElement(tbl_grid, _q("gridCol"))
+        g.set(_q("w"), w)
+
+    tr = etree.SubElement(tbl, _q("tr"))
+    tr.append(_tc_with_paras(left_paras, left_w))
+    tr.append(_tc_with_paras(right_paras, right_w))
+
+    insert_at = list(body).index(date_label_p)
+    body.insert(insert_at, tbl)
+
+    remove = {date_label_p, billed_p, company_p, bank_p}
+    if date_val_p is not None:
+        remove.add(date_val_p)
+    if invoice_p is not None:
+        remove.add(invoice_p)
+    started = False
+    for child in list(body):
+        if child in remove:
+            started = True
+            body.remove(child)
+            continue
+        if started and child.tag == _q("p") and not _para_text(child).strip():
+            nxt = child.getnext()
+            if nxt is not None and (nxt in remove or nxt is tbl or nxt.tag == _q("tbl")):
+                body.remove(child)
+            else:
+                break
+        elif started and child is tbl:
+            continue
+        elif started:
+            break
+
+    for sect in root.iter(_q("sectPr")):
+        cols = sect.find(_q("cols"))
+        if cols is not None:
+            cols.set(_q("num"), "1")
+            cols.set(_q("space"), "0")
+            for col in list(cols):
+                cols.remove(col)
+
+    # Leftover column breaks (e.g. under Note) make LibreOffice spill to extra pages.
+    for br in list(root.iter(_q("br"))):
+        if br.get(_q("type")) == "column":
+            parent = br.getparent()
+            if parent is not None:
+                parent.remove(br)
+
+
 def _fill_coretechify(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
@@ -618,6 +849,47 @@ def _fill_coretechify(root: etree._Element, data: WordInvoiceData, invoice_date:
         cents=True,
     )
     _replace_in_text_nodes(root, "$95.00", total, replace_all=True)
+    # Live LibreOffice misplaces address into the right column; flatten like Word.
+    _flatten_coretechify_columns(root, invoice_date=invoice_date, invoice_no=inv)
+
+
+def _bravix_date(invoice_date: date | None) -> str:
+    """Bravix template uses DD.MM.YYYY (e.g. 11.03.2030)."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d}.{d.month:02d}.{d.year}"
+
+
+def _fill_bravix_payment_lines(
+    tbl: etree._Element,
+    row_0: int,
+    name: str,
+    bank: str,
+    iban: str,
+    branch: str,
+) -> None:
+    """Keep real layout: four stacked label lines in the payment cell."""
+    rows = _table_rows(tbl)
+    if row_0 < 0 or row_0 >= len(rows):
+        return
+    cells = [c for c in rows[row_0] if c.tag == _q("tc")]
+    if not cells:
+        return
+    filled = {
+        "account name": f"Account Name: {name}",
+        "bank name": f"Bank Name: {bank}",
+        "account no": f"Account No: {iban}",
+        "branch code": f"Branch Code: {branch}",
+    }
+    # Direct cell paragraphs only (template has empty spacers + 4 label lines).
+    for p in cells[0].findall(_q("p")):
+        raw = _para_text(p).strip()
+        if not raw:
+            continue
+        key = raw.lower().rstrip(":").strip()
+        for label, text in filled.items():
+            if key == label or key.startswith(label):
+                _set_para_text(p, text)
+                break
 
 
 def _fill_bravix(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
@@ -626,7 +898,7 @@ def _fill_bravix(root: etree._Element, data: WordInvoiceData, invoice_date: date
     total = _money(data.total_amount, cents=True)
     if inv:
         _replace_all(root, "01234", inv)
-    _replace_all(root, "11.03.2030", _short_date(invoice_date))
+    _replace_all(root, "11.03.2030", _bravix_date(invoice_date))
     tables = _tables(root)
     if tables:
         _delete_rows(tables[0], [5, 4])
@@ -643,7 +915,7 @@ def _fill_bravix(root: etree._Element, data: WordInvoiceData, invoice_date: date
             total_row = len(rows) - 1
             cells = [c for c in rows[total_row] if c.tag == _q("tc")]
             if cells:
-                _set_cell_text(tables[0], total_row, 0, f"Account Name: {name} Bank Name: {bank} Account No: {iban} Branch Code: {branch}")
+                _fill_bravix_payment_lines(tables[0], total_row, name, bank, iban, branch)
                 _set_cell_text(tables[0], total_row, len(cells) - 1, total)
                 if len(cells) >= 5:
                     _set_cell_text(tables[0], total_row, 4, total)
@@ -651,8 +923,12 @@ def _fill_bravix(root: etree._Element, data: WordInvoiceData, invoice_date: date
 
 
 def _fill_ravotek(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
+    inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount)
+    if inv:
+        _replace_all(root, "01234", inv)
+    _replace_all(root, "11 . 02 . 2030", _short_date(invoice_date))
     # Services live in the DESCRIPTION table (not the INVOICE NO header tables).
     for tbl in _tables_matching(root, "Property Valuation", "Professional Photography"):
         _delete_rows(tbl, [6, 5, 4])  # drop sample rows 4–6; keep header + 3 items
@@ -690,8 +966,12 @@ def _fill_ravotek(root: etree._Element, data: WordInvoiceData, invoice_date: dat
 
 
 def _fill_cozy(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
+    inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount)
+    if inv:
+        _replace_all(root, "01234", inv)
+    _replace_all(root, "11 . 02 . 2030", _short_date(invoice_date))
     for tbl in _tables_matching(root, "Property Valuation", "Professional Photography"):
         _delete_rows(tbl, [6, 5, 4])  # drop sample rows 4–6
         # trailing empty spacer row (was index 7)
@@ -719,35 +999,112 @@ def _fill_cozy(root: etree._Element, data: WordInvoiceData, invoice_date: date |
     _replace_all(root, "$2244", total)
 
 
+def _ecomify_spaced(text: str) -> str:
+    """Ecomify template letter-spaces values (e.g. 0 1 / 0 2 / 2 0 2 3)."""
+    return " ".join(text)
+
+
+def _ecomify_date(invoice_date: date | None) -> str:
+    d = invoice_date or date.today()
+    return _ecomify_spaced(f"{d.day:02d}/{d.month:02d}/{d.year}")
+
+
+def _ecomify_money(amount: int) -> str:
+    return _ecomify_spaced(f"${int(amount)}")
+
+
+def _clear_table_row(tbl: etree._Element, row_0: int) -> None:
+    rows = _table_rows(tbl)
+    if row_0 < 0 or row_0 >= len(rows):
+        return
+    cells = [c for c in rows[row_0] if c.tag == _q("tc")]
+    for ci in range(len(cells)):
+        _set_cell_text(tbl, row_0, ci, " ")
+
+
 def _fill_ecomify(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
-    total = _money(data.total_amount)
+    total = _ecomify_money(data.total_amount)
+    zero = _ecomify_spaced("$0")
     if inv:
-        _replace_all(root, "1 2 3 4 / 5 6 7 8 9", inv)
-    _replace_all(root, "0 1 / 0 2 / 2 0 2 3", _short_date(invoice_date))
-    _replace_all(root, "Bank Name", f"Bank Name: {bank}")
-    _replace_all(root, "Account Name:", f"Account Name: {name}")
-    _replace_all(root, "Account No:", f"Account No: {iban}")
-    _replace_all(root, "Branch Code: ", f"Branch Code: {branch} ")
+        _replace_all(root, "1 2 3 4 / 5 6 7 8 9", _ecomify_spaced(inv))
+    _replace_all(root, "0 1 / 0 2 / 2 0 2 3", _ecomify_date(invoice_date))
+    # Preserve soft-breaks between Payable To lines (real format).
+    _fill_label(root, "Bank Name", bank)
+    _fill_label(root, "Account Name", name)
+    _fill_label(root, "Account No", iban)
+    _fill_label(root, "Branch Code", branch)
     tables = _tables(root)
     if len(tables) >= 2:
         tbl = tables[1]
         tasks = list(data.tasks[:3]) if data.tasks else []
+        rows = _table_rows(tbl)
         for i in range(min(3, len(tasks))):
             _set_cell_text(tbl, i, 1, tasks[i].sub_task)
-            cells = [c for c in _table_rows(tbl)[i] if c.tag == _q("tc")]
+            cells = [c for c in rows[i] if c.tag == _q("tc")]
             if len(cells) >= 5:
-                _set_cell_text(tbl, i, 4, _money(tasks[i].amount))
-        _delete_rows(tbl, [6, 5, 4, 3])
+                _set_cell_text(tbl, i, 4, _ecomify_money(tasks[i].amount))
+        # Keep full 7-row grid like the real Word template; clear unused sample rows.
+        for ri in range(len(tasks), len(rows)):
+            _clear_table_row(tbl, ri)
     if len(tables) >= 3:
         summary = tables[2]
         rows = _table_rows(summary)
-        for ri, val in ((0, total), (1, "$0"), (2, "$0"), (3, total)):
+        for ri, val in ((0, total), (1, zero), (2, zero), (3, total)):
             if ri < len(rows):
                 cells = [c for c in rows[ri] if c.tag == _q("tc")]
                 if cells:
                     _set_cell_text(summary, ri, len(cells) - 1, val)
+
+
+def _alpha_date(invoice_date: date | None) -> str:
+    """Alpha template date cell: 28/ 07 / 2095 → DD/ MM / YYYY."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d}/ {d.month:02d} / {d.year}"
+
+
+def _set_alpha_payment_para(p: etree._Element, name: str, iban: str, branch: str) -> None:
+    """Rebuild Account/No/Branch as three soft-break lines (real Alpha layout).
+
+    Template ends this paragraph with a column break so TOTAL stays in the
+    right newspaper column — keep that or LibreOffice moves Branch Code right.
+    """
+    first_rpr = None
+    for r in p.findall(_q("r")):
+        rpr = r.find(_q("rPr"))
+        if rpr is not None:
+            first_rpr = etree.fromstring(etree.tostring(rpr))
+            break
+    for child in list(p):
+        if child.tag in (_q("r"), _q("hyperlink")):
+            p.remove(child)
+
+    def _add_text(text: str) -> None:
+        r = etree.SubElement(p, _q("r"))
+        if first_rpr is not None:
+            r.append(etree.fromstring(etree.tostring(first_rpr)))
+        t = etree.SubElement(r, _q("t"))
+        _set_text_node(t, text)
+
+    def _add_break(*, column: bool = False) -> None:
+        r = etree.SubElement(p, _q("r"))
+        if first_rpr is not None:
+            r.append(etree.fromstring(etree.tostring(first_rpr)))
+        br = etree.SubElement(r, _q("br"))
+        if column:
+            br.set(_q("type"), "column")
+
+    lines = [
+        f"Account Name: {name}",
+        f"Account No.: {iban}",
+        f"Branch Code: {branch}",
+    ]
+    for i, line in enumerate(lines):
+        if i:
+            _add_break()
+        _add_text(line)
+    _add_break(column=True)
 
 
 def _fill_alpha(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
@@ -756,15 +1113,27 @@ def _fill_alpha(root: etree._Element, data: WordInvoiceData, invoice_date: date 
     total = _money(data.total_amount)
     if inv:
         _replace_all(root, "52131", inv)
-    _replace_all(root, "28/ 07 / 2095", _short_date(invoice_date))
-    _replace_all(
-        root,
-        "Account Name: Daniel Gallego Account No.: 0123 4567 8901 Branch Code",
-        f"Account Name: {name} Account No.: {iban} Branch Code: {branch}",
-    )
-    _replace_all(root, "Daniel Gallego", name)
-    _replace_all(root, "0123 4567 8901", iban)
-    _replace_all(root, "Bank Name: ", f"Bank Name: {bank} ")
+    _replace_all(root, "28/ 07 / 2095", _alpha_date(invoice_date))
+    # Label is split across runs ("Bank" + " Name: "); replace joined segment.
+    if not _replace_one(root, "Bank Name: ", f"Bank Name: {bank} "):
+        _fill_label(root, "Bank Name", bank)
+    # Account line is one paragraph that Word wraps into 3 visual lines — rebuild with soft-breaks.
+    payment_paras = [
+        p
+        for p in root.iter(_q("p"))
+        if "Account Name" in _para_text(p) and "Branch Code" in _para_text(p)
+    ]
+    if payment_paras:
+        for p in payment_paras:
+            _set_alpha_payment_para(p, name, iban, branch)
+    else:
+        _replace_all(
+            root,
+            "Account Name: Daniel Gallego Account No.: 0123 4567 8901 Branch Code",
+            f"Account Name: {name} Account No.: {iban} Branch Code: {branch}",
+        )
+        _replace_all(root, "Daniel Gallego", name)
+        _replace_all(root, "0123 4567 8901", iban)
     _replace_all(root, "$285", total)
     tables = _tables(root)
     if len(tables) >= 2:
@@ -810,36 +1179,248 @@ def _fill_synergo(root: etree._Element, data: WordInvoiceData, invoice_date: dat
                 _set_cell_text(t2, 0, len(cells) - 1, total)
 
 
+def _set_ignitai_bank_para(
+    p: etree._Element, bank: str, name: str, iban: str, branch: str
+) -> None:
+    """Rebuild bank paragraph as four soft-break lines (real Ignitai layout)."""
+    # Keep first run props if present for font continuity.
+    first_rpr = None
+    for r in p.findall(_q("r")):
+        rpr = r.find(_q("rPr"))
+        if rpr is not None:
+            first_rpr = etree.fromstring(etree.tostring(rpr))
+            break
+    for child in list(p):
+        if child.tag in (_q("r"), _q("hyperlink")):
+            p.remove(child)
+
+    def _add_text(text: str) -> None:
+        r = etree.SubElement(p, _q("r"))
+        if first_rpr is not None:
+            r.append(etree.fromstring(etree.tostring(first_rpr)))
+        t = etree.SubElement(r, _q("t"))
+        _set_text_node(t, text)
+
+    def _add_break() -> None:
+        r = etree.SubElement(p, _q("r"))
+        if first_rpr is not None:
+            r.append(etree.fromstring(etree.tostring(first_rpr)))
+        etree.SubElement(r, _q("br"))
+
+    lines = [
+        f"Bank Name: {bank}",
+        f"Account Name: {name}",
+        f"Account No: {iban}",
+        f"Branch Code: {branch}",
+    ]
+    for i, line in enumerate(lines):
+        if i:
+            _add_break()
+        _add_text(line)
+
+
+def _ignitai_rpr(*, bold: bool = False, size_half_points: str = "22") -> etree._Element:
+    rpr = etree.Element(_q("rPr"))
+    if bold:
+        etree.SubElement(rpr, _q("b"))
+    sz = etree.SubElement(rpr, _q("sz"))
+    sz.set(_q("val"), size_half_points)
+    sz_cs = etree.SubElement(rpr, _q("szCs"))
+    sz_cs.set(_q("val"), size_half_points)
+    fonts = etree.SubElement(rpr, _q("rFonts"))
+    fonts.set(_q("ascii"), "Lucida Sans Unicode")
+    fonts.set(_q("hAnsi"), "Lucida Sans Unicode")
+    fonts.set(_q("cs"), "Lucida Sans Unicode")
+    return rpr
+
+
+def _ignitai_para(text: str, *, bold: bool = False) -> etree._Element:
+    p = etree.Element(_q("p"))
+    r = etree.SubElement(p, _q("r"))
+    r.append(_ignitai_rpr(bold=bold))
+    t = etree.SubElement(r, _q("t"))
+    _set_text_node(t, text)
+    return p
+
+
+def _flatten_ignitai_header(
+    root: etree._Element,
+    *,
+    invoice_no: str,
+    invoice_date: date | None,
+) -> None:
+    """LibreOffice misreads Ignitai newspaper columns; flatten header to a 2-col table."""
+    body = root.find(_q("body"))
+    if body is None:
+        return
+    children = [c for c in body if c.tag == _q("p")]
+    from_p = draw_p = addr_p = date_p = None
+    for p in children:
+        text = _para_text(p)
+        has_drawing = any(
+            True
+            for n in p.iter()
+            if n.tag.endswith("}drawing") or n.tag.endswith("}AlternateContent")
+        )
+        if "From:" in text and "IGNITIA" in text.upper():
+            from_p = p
+        elif "Invoice:" in text or has_drawing:
+            # Drawing para also carries "Invoice: …" after a column break.
+            if has_drawing or "Invoice:" in text:
+                draw_p = p if draw_p is None or has_drawing else draw_p
+        elif "KENTWOOD" in text.upper() or (
+            "Date:" in text and "RIVERSIDE" in text.upper()
+        ):
+            addr_p = p
+        elif date_p is None and (
+            re.search(r"\d{4}", text)
+            and any(
+                m in text
+                for m in (
+                    "January",
+                    "February",
+                    "March",
+                    "April",
+                    "May",
+                    "June",
+                    "July",
+                    "August",
+                    "September",
+                    "October",
+                    "November",
+                    "December",
+                )
+            )
+            and "Pay" not in text
+            and "Bank" not in text
+        ):
+            date_p = p
+
+    if from_p is None or addr_p is None:
+        return
+
+    company = "IGNITIA INC"
+    m = re.search(r"(IGNITIA\s+INC)", _para_text(from_p), flags=re.IGNORECASE)
+    if m:
+        company = m.group(1).upper()
+    addr_blob = _para_text(addr_p)
+    addr_blob = re.split(r"Date\s*:", addr_blob, maxsplit=1)[0].strip()
+    # Real PDF wraps street / city line.
+    if "," in addr_blob:
+        street, rest = addr_blob.split(",", 1)
+        addr_lines = [street.strip() + ",", rest.strip()]
+    else:
+        addr_lines = [addr_blob] if addr_blob else []
+
+    inv = invoice_no or "000"
+    date_str = _full_date(invoice_date)
+    left = [
+        _ignitai_para("From:", bold=True),
+        _ignitai_para(company),
+        *[_ignitai_para(line) for line in addr_lines],
+    ]
+    right = [
+        _ignitai_para(f"Invoice:     {inv}", bold=True),
+        _ignitai_para(""),
+        _ignitai_para("Date:", bold=True),
+        _ignitai_para(date_str),
+    ]
+
+    left_w, right_w = "5400", "4200"
+    table_w = str(int(left_w) + int(right_w))
+    tbl = etree.Element(_q("tbl"))
+    tbl_pr = etree.SubElement(tbl, _q("tblPr"))
+    tbl_w = etree.SubElement(tbl_pr, _q("tblW"))
+    tbl_w.set(_q("w"), table_w)
+    tbl_w.set(_q("type"), "dxa")
+    borders = etree.SubElement(tbl_pr, _q("tblBorders"))
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = etree.SubElement(borders, _q(edge))
+        b.set(_q("val"), "nil")
+        b.set(_q("sz"), "0")
+        b.set(_q("space"), "0")
+        b.set(_q("color"), "auto")
+    grid = etree.SubElement(tbl, _q("tblGrid"))
+    for w in (left_w, right_w):
+        g = etree.SubElement(grid, _q("gridCol"))
+        g.set(_q("w"), w)
+    tr = etree.SubElement(tbl, _q("tr"))
+    tr.append(_tc_with_paras(left, left_w))
+    tr.append(_tc_with_paras(right, right_w))
+
+    insert_at = list(body).index(from_p)
+    body.insert(insert_at, tbl)
+
+    # Keep the floating items drawing; strip Invoice text + column break from that para.
+    if draw_p is not None:
+        for child in list(draw_p):
+            if child.tag != _q("r"):
+                continue
+            has_draw = any(
+                True
+                for n in child.iter()
+                if n.tag.endswith("}drawing") or n.tag.endswith("}AlternateContent")
+            )
+            if has_draw:
+                continue
+            draw_p.remove(child)
+
+    for p in (from_p, addr_p, date_p):
+        if p is not None and p.getparent() is body:
+            body.remove(p)
+
+    for sect in root.iter(_q("sectPr")):
+        cols = sect.find(_q("cols"))
+        if cols is not None:
+            cols.set(_q("num"), "1")
+            cols.set(_q("space"), "0")
+            for col in list(cols):
+                cols.remove(col)
+
+    for br in list(root.iter(_q("br"))):
+        if br.get(_q("type")) != "column":
+            continue
+        # Don't touch breaks nested inside drawings/textboxes.
+        parent = br
+        skip = False
+        while parent is not None:
+            tag = parent.tag if isinstance(parent.tag, str) else ""
+            if _is_nested_object(tag):
+                skip = True
+                break
+            parent = parent.getparent()
+        if skip:
+            continue
+        parent = br.getparent()
+        if parent is not None:
+            parent.remove(br)
+
+
 def _fill_ignitai(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount)
+    # Real format: "Invoice:     000" (not "Invoice Number:" / "2024-003").
     if inv:
-        _replace_all(root, "2024-003", inv)
-    _replace_all(root, "March 14, 2025", _short_date(invoice_date))
-    # Soft-break separates Branch Code; replace line-by-line so w:br stays.
-    _replace_one(
-        root,
-        "Bank Name: Account Name: Account No:",
-        f"Bank Name: {bank} Account Name: {name} Account No: {iban}",
-    )
-    if not any(
-        f"Bank Name: {bank}" in (t.text or "") or bank in (t.text or "")
-        for t in root.iter(_q("t"))
-    ):
-        # Fallback when label text is split across runs on one soft-break line
-        for p in root.iter(_q("p")):
-            for segment in _line_segments(p):
-                full = "".join(t.text or "" for t in segment)
-                if "Bank Name:" in full and "Account No:" in full and bank not in full:
-                    _set_segment_text(
-                        segment,
-                        f"Bank Name: {bank} Account Name: {name} Account No: {iban}",
-                    )
-                    break
-    _fill_label(root, "Branch Code", branch)
-    if branch and not any(branch in (t.text or "") for t in root.iter(_q("t"))):
-        _replace_one(root, "Branch Code:", f"Branch Code: {branch}")
+        if not _replace_all(root, "Invoice:     000", f"Invoice:     {inv}"):
+            if not _replace_all(root, "   Invoice:     000", f"   Invoice:     {inv}"):
+                _replace_all(root, "2024-003", inv)
+    # Real template: "March 14, 2025" (full month name)
+    _replace_all(root, "March 14, 2025", _full_date(invoice_date))
+    # Stack bank fields on four soft-break lines (matches Word PDF).
+    bank_paras = [
+        p
+        for p in root.iter(_q("p"))
+        if "Bank Name" in _para_text(p) and "Branch Code" in _para_text(p)
+    ]
+    if bank_paras:
+        for p in bank_paras:
+            _set_ignitai_bank_para(p, bank, name, iban, branch)
+    else:
+        _fill_label(root, "Bank Name", bank)
+        _fill_label(root, "Account Name", name)
+        _fill_label(root, "Account No", iban)
+        _fill_label(root, "Branch Code", branch)
     tasks = list(data.tasks[:3]) if data.tasks else []
     # Template duplicates the items table (body + textbox); fill every copy.
     for tbl in _tables_matching(root, "Architectural Design", "Item Description"):
@@ -864,6 +1445,8 @@ def _fill_ignitai(root: etree._Element, data: WordInvoiceData, invoice_date: dat
                     _set_cell_text(tbl, ri, len(cells) - 1, total)
                 break
     _replace_all(root, "$30,000", total)
+    # Critical for live Linux PDF: flatten MS newspaper columns for header.
+    _flatten_ignitai_header(root, invoice_no=inv, invoice_date=invoice_date)
     # Tighten empty paragraphs that push "Thank you" onto page 2 in LibreOffice.
     body = root.find(_q("body"))
     if body is not None:
@@ -876,13 +1459,138 @@ def _fill_ignitai(root: etree._Element, data: WordInvoiceData, invoice_date: dat
         if thank_idx is not None:
             j = thank_idx - 1
             while j >= 0 and not _para_text(paras[j]).strip():
+                # Keep section-break paras (they hold sectPr).
+                ppr = paras[j].find(_q("pPr"))
+                if ppr is not None and ppr.find(_q("sectPr")) is not None:
+                    break
                 parent = paras[j].getparent()
                 if parent is not None:
                     parent.remove(paras[j])
                 j -= 1
 
 
+def _dynamo_slash_date(invoice_date: date | None) -> str:
+    d = invoice_date or date.today()
+    return f"{d.day:02d} / {d.month:02d} / {d.year}"
+
+
+def _dynamo_pay_by_date(invoice_date: date | None) -> str:
+    d = invoice_date or date.today()
+    return f"{d.day} {d.strftime('%B')} {d.year}"
+
+
+def _dynamo_rebuild_para(
+    p: etree._Element,
+    lines: list[str],
+    *,
+    keep_leading_column_br: bool = False,
+    compact_first: bool = False,
+) -> None:
+    """Replace paragraph runs with stacked lines; optionally keep a leading column break."""
+    first_rpr = None
+    for r in p.findall(_q("r")):
+        rpr = r.find(_q("rPr"))
+        if rpr is not None and r.find(_q("t")) is not None:
+            first_rpr = etree.fromstring(etree.tostring(rpr))
+            break
+    for child in list(p):
+        if child.tag in (_q("r"), _q("hyperlink")):
+            p.remove(child)
+
+    def _add(text: str, *, br: bool = False, column: bool = False, compact: bool = False) -> None:
+        r = etree.SubElement(p, _q("r"))
+        if first_rpr is not None and not column:
+            rpr = etree.fromstring(etree.tostring(first_rpr))
+            if compact:
+                # Narrow right column fits ~6 chars at template scale; squeeze longer IDs.
+                w_el = rpr.find(_q("w"))
+                if w_el is None:
+                    w_el = etree.SubElement(rpr, _q("w"))
+                w_el.set(_q("val"), "72")
+                sp = rpr.find(_q("spacing"))
+                if sp is None:
+                    sp = etree.SubElement(rpr, _q("spacing"))
+                sp.set(_q("val"), "-12")
+            r.append(rpr)
+        if br or column:
+            br_el = etree.SubElement(r, _q("br"))
+            if column:
+                br_el.set(_q("type"), "column")
+            return
+        t = etree.SubElement(r, _q("t"))
+        _set_text_node(t, text)
+
+    if keep_leading_column_br:
+        _add("", column=True)
+    for i, line in enumerate(lines):
+        if i:
+            _add("", br=True)
+        _add(line, compact=compact_first and i == 0 and len(line) > 6)
+
+
+def _fill_dynamo(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
+    """Invoice05 — real Dynamo Creatives (Bank Name / Account Name / Account No)."""
+    inv = data.document_invoice_no or "DV-001"
+    bank, name, iban = data.bank or "", data.person_name or "", data.iban or ""
+    total = _money(data.total_amount)
+    slash = _dynamo_slash_date(invoice_date)
+    # Soft-break keeps Invoice# above Date in the narrow right column.
+    inv_paras = [
+        p
+        for p in root.iter(_q("p"))
+        if "DV-001" in _para_text(p) or ("18 / 04 / 2025" in _para_text(p) and "Pay" not in _para_text(p))
+    ]
+    if inv_paras:
+        for p in inv_paras:
+            _dynamo_rebuild_para(
+                p,
+                [inv, slash],
+                keep_leading_column_br=True,
+                compact_first=True,
+            )
+    else:
+        if inv and inv != "DV-001":
+            _replace_all(root, "DV-001", inv)
+        _replace_all(root, "18 / 04 / 2025", slash)
+    _replace_all(root, "18 April 2025", _dynamo_pay_by_date(invoice_date))
+    # Stack Bank Name / Account Name like the real Word PDF.
+    bank_paras = [
+        p
+        for p in root.iter(_q("p"))
+        if "Bank Name" in _para_text(p) and "Account Name" in _para_text(p)
+    ]
+    if bank_paras:
+        for p in bank_paras:
+            _dynamo_rebuild_para(p, [f"Bank Name: {bank}", f"Account Name: {name}"])
+    else:
+        _replace_all(
+            root,
+            "Bank Name:Faisal Bank Account Name:Dynaverse",
+            f"Bank Name: {bank} Account Name: {name}",
+        )
+    if not _replace_all(
+        root,
+        "Account  No.:  PK52FAYS3059301000006776",
+        f"Account  No.:  {iban}",
+    ):
+        _replace_all(root, "PK52FAYS3059301000006776", iban)
+    _fill_three_services(
+        root,
+        data,
+        sample_names=[
+            "Social Media Marketing Services",
+            "Content Writing",
+            "Website Development",
+        ],
+        sample_amounts=["$4,000", "$3,500", "$2,500"],
+        cents=False,
+    )
+    _replace_all(root, "$10,000", total)
+    # Keep column breaks: header (Invoice#/Date) and Tax (payment left / totals right).
+
+
 FILLERS = {
+    5: _fill_dynamo,
     6: _fill_ravotek,
     7: _fill_ignitai,
     8: _fill_coretechify,

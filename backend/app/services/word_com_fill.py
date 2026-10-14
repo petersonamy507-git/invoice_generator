@@ -33,24 +33,56 @@ def _word_app():
     return word
 
 
+def _story_ranges(doc):
+    """Yield main + textbox/header stories (invoice NO often lives in text frames)."""
+    seen: set[int] = set()
+    for story_id in range(1, 12):  # wdMainTextStory … wdTextFrameStory, etc.
+        try:
+            story = doc.StoryRanges(story_id)
+        except Exception:
+            continue
+        while story is not None:
+            try:
+                key = int(story.Start) ^ (int(story.End) << 16) ^ story_id
+            except Exception:
+                key = id(story)
+            if key in seen:
+                break
+            seen.add(key)
+            yield story
+            try:
+                story = story.NextStoryRange
+            except Exception:
+                break
+
+
 def _replace(doc, find_text: str, replace_text: str, *, replace_all: bool = True) -> int:
     if not find_text:
         return 0
     repl = replace_text if len(replace_text) <= 255 else replace_text[:255]
-    ok = doc.Content.Find.Execute(
-        FindText=find_text,
-        MatchCase=False,
-        MatchWholeWord=False,
-        MatchWildcards=False,
-        MatchSoundsLike=False,
-        MatchAllWordForms=False,
-        Forward=True,
-        Wrap=1,
-        Format=False,
-        ReplaceWith=repl,
-        Replace=2 if replace_all else 1,
-    )
-    return int(bool(ok))
+    hits = 0
+    for story in _story_ranges(doc):
+        try:
+            ok = story.Find.Execute(
+                FindText=find_text,
+                MatchCase=False,
+                MatchWholeWord=False,
+                MatchWildcards=False,
+                MatchSoundsLike=False,
+                MatchAllWordForms=False,
+                Forward=True,
+                Wrap=1,
+                Format=False,
+                ReplaceWith=repl,
+                Replace=2 if replace_all else 1,
+            )
+        except Exception:
+            continue
+        if ok:
+            hits += 1
+            if not replace_all:
+                return hits
+    return hits
 
 
 def _replace_all(doc, find_text: str, replace_text: str) -> int:
@@ -104,6 +136,30 @@ def _set_cell_text(table, row_1based: int, col_1based: int, text: str) -> None:
             pass
 
 
+def _set_cell_plain(table, row_1based: int, col_1based: int, text: str) -> None:
+    """Replace entire cell body (all paragraphs), keeping the end-of-cell mark."""
+    cell = table.Cell(row_1based, col_1based)
+    rng = cell.Range.Duplicate
+    rng.MoveEnd(1, -1)
+    rng.Text = text if text != "" else " "
+
+
+def _fill_empty_label(doc, label: str, value: str) -> None:
+    """Fill 'Label' / 'Label:' once without Word Find re-matching the result."""
+    if not value:
+        return
+    # Prefer already-colon forms with trailing space (empty value).
+    for find in (f"{label}:  ", f"{label}: ", f"{label} ", label):
+        if find.endswith(": ") or find.endswith(":  "):
+            repl = f"{label}: {value}" + ("  " if find.endswith(":  ") else " ")
+        elif find.endswith(" "):
+            repl = f"{label}: {value} "
+        else:
+            repl = f"{label}: {value}"
+        if _replace_one(doc, find, repl):
+            return
+
+
 def _delete_table_rows(table, row_1based_list: list[int]) -> None:
     """Delete rows highest-index first so indices stay valid."""
     for row_1 in sorted(row_1based_list, reverse=True):
@@ -135,17 +191,19 @@ def _fill_three_service_rows(
 
 def _fill_ravotek(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     # Invoice06 — 6 sample rows; keep 3, delete 4–6.
+    inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount)
+    if inv:
+        _replace_all(doc, "01234", inv)
+    _replace_all(doc, "11 . 02 . 2030", _short_date(invoice_date))
     if doc.Tables.Count >= 1:
         _delete_table_rows(doc.Tables(1), [7, 6, 5])  # rows 5–7 were sample 4–6 (1=header)
     _replace_all(doc, "Account Name: Daniel Gallego", f"Account Name: {name}")
     _replace_all(doc, "Daniel Gallego", name)
-    _replace_all(doc, "Bank Name ", f"Bank Name: {bank} ")
-    _replace_all(doc, "Bank Name", f"Bank Name: {bank}")
-    _replace_all(doc, "Account No.:", f"Account No.: {iban}")
-    _replace_all(doc, "Branch Code:  ", f"Branch Code: {branch}  ")
-    _replace_all(doc, "Branch Code:", f"Branch Code: {branch}")
+    _fill_empty_label(doc, "Bank Name", bank)
+    _replace_one(doc, "Account No.:", f"Account No.: {iban}")
+    _fill_empty_label(doc, "Branch Code", branch)
     names = [
         "Property Valuation & Pricing Strategy",
         "Professional Photography",
@@ -191,23 +249,38 @@ def _fill_ignitai(doc, data: WordInvoiceData, invoice_date: date | None) -> None
         data.branch_code or "",
     )
     total = _money(data.total_amount, cents=False)
+    # Real format: "Invoice:     000" (not "Invoice Number:" / "2024-003").
     if inv:
-        _replace_all(doc, "2024-003", inv)
-    _replace_all(doc, "March 14, 2025", _short_date(invoice_date))
-    # Match original two-line bank block (soft break before Branch Code only).
+        if not _replace_all(doc, "Invoice:     000", f"Invoice:     {inv}"):
+            if not _replace_all(doc, "   Invoice:     000", f"   Invoice:     {inv}"):
+                _replace_all(doc, "2024-003", inv)
+    # Real template uses full month style: "March 14, 2025"
+    _replace_all(doc, "March 14, 2025", _full_date(invoice_date))
+    # Real PDF stacks four bank lines; keep each label on its own soft-break line.
+    bank_block = (
+        f"Bank Name: {bank}^l"
+        f"Account Name: {name}^l"
+        f"Account No: {iban}^l"
+        f"Branch Code: {branch}"
+    )
     replaced = _replace_all(
         doc,
         "Bank Name: Account Name: Account No:^lBranch Code:",
-        f"Bank Name: {bank} Account Name: {name} Account No: {iban}^lBranch Code: {branch}",
+        bank_block,
     )
     if not replaced:
-        _replace_all(
+        replaced = _replace_all(
             doc,
             "Bank Name: Account Name: Account No:",
-            f"Bank Name: {bank} Account Name: {name} Account No: {iban}",
+            f"Bank Name: {bank}^lAccount Name: {name}^lAccount No: {iban}",
         )
-        # Only fill bare "Branch Code:" if still empty (avoid double prefix).
-        _replace_all(doc, "Branch Code:", f"Branch Code: {branch}")
+        if replaced:
+            _replace_one(doc, "Branch Code:", f"Branch Code: {branch}")
+        else:
+            _fill_empty_label(doc, "Bank Name", bank)
+            _fill_empty_label(doc, "Account Name", name)
+            _replace_one(doc, "Account No:", f"Account No: {iban}")
+            _fill_empty_label(doc, "Branch Code", branch)
 
     table = _ignitai_item_table(doc)
     tasks = list(data.tasks[:3]) if data.tasks else []
@@ -304,38 +377,81 @@ def _fill_coretechify(doc, data: WordInvoiceData, invoice_date: date | None) -> 
         _replace_all(doc, "INVOICE NO. 000001", f"INVOICE NO. {inv}")
         _replace_all(doc, "000001", inv)
     _replace_all(doc, "September 15, 2030", _full_date(invoice_date))
-    # Soft breaks; labels use "Account No:" (not NO)
-    _replace_all(
+    # Soft breaks between Payable/From bank lines (preserve stacked layout).
+    replaced = _replace_all(
         doc,
-        "Bank Name ^lAccount Name ^lAccount No:^lBranch Code",
-        f"Bank Name: {bank}^lAccount Name: {name}^lAccount No: {iban}^lBranch Code: {branch}",
+        "Bank Name ^lAccount Name ^lAccount No:^l^lBranch Code",
+        f"Bank Name: {bank}^lAccount Name: {name}^lAccount No: {iban}^l^lBranch Code: {branch}",
     )
+    if not replaced:
+        replaced = _replace_all(
+            doc,
+            "Bank Name ^lAccount Name ^lAccount No:^lBranch Code",
+            f"Bank Name: {bank}^lAccount Name: {name}^lAccount No: {iban}^lBranch Code: {branch}",
+        )
+    if not replaced:
+        _fill_empty_label(doc, "Bank Name", bank)
+        _fill_empty_label(doc, "Account Name", name)
+        _replace_one(doc, "Account No:", f"Account No: {iban}")
+        _fill_empty_label(doc, "Branch Code", branch)
     if doc.Tables.Count >= 1:
         _delete_table_rows(doc.Tables(1), [6, 5])
     _fill_three_service_rows(
         doc,
         data,
-        sample_names=["Business Development", "Web Development", "Consultation"],
+        # Top-to-bottom order must match sample_amounts / table rows.
+        sample_names=["Consultation", "Web Development", "Business Development"],
         sample_amounts=["$5.00", "$30.00", "$5.00"],
         cents=True,
     )
     _replace_all(doc, "$95.00", total)
 
 
+def _ecomify_spaced(text: str) -> str:
+    """Ecomify template letter-spaces values (e.g. 0 1 / 0 2 / 2 0 2 3)."""
+    return " ".join(text)
+
+
+def _ecomify_date(invoice_date: date | None) -> str:
+    """Match real template date cell: spaced DD/MM/YYYY."""
+    d = invoice_date or date.today()
+    return _ecomify_spaced(f"{d.day:02d}/{d.month:02d}/{d.year}")
+
+
+def _ecomify_money(amount: int) -> str:
+    """Match real amount cells: $ 1 5 0 0."""
+    return _ecomify_spaced(f"${int(amount)}")
+
+
+def _clear_table_row_com(table, row_1based: int) -> None:
+    if row_1based < 1 or row_1based > table.Rows.Count:
+        return
+    for col in range(1, table.Columns.Count + 1):
+        try:
+            _set_cell_text(table, row_1based, col, " ")
+        except Exception:
+            pass
+
+
 def _fill_ecomify(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
-    total = _money(data.total_amount)
+    total = _ecomify_money(data.total_amount)
+    zero = _ecomify_spaced("$0")
     if inv:
-        _replace_all(doc, "1 2 3 4 / 5 6 7 8 9", inv)
-    _replace_all(doc, "0 1 / 0 2 / 2 0 2 3", _short_date(invoice_date))
-    _replace_all(
+        _replace_all(doc, "1 2 3 4 / 5 6 7 8 9", _ecomify_spaced(inv))
+    _replace_all(doc, "0 1 / 0 2 / 2 0 2 3", _ecomify_date(invoice_date))
+    replaced = _replace_all(
         doc,
         "Bank Name^lAccount Name:^lAccount No:",
         f"Bank Name: {bank}^lAccount Name: {name}^lAccount No: {iban}",
     )
-    _replace_all(doc, "Branch Code: ", f"Branch Code: {branch} ")
-    # Fill first 3 line rows in table 2 (1-based table index 2); delete extras
+    if not replaced:
+        _fill_empty_label(doc, "Bank Name", bank)
+        _replace_one(doc, "Account Name:", f"Account Name: {name}")
+        _replace_one(doc, "Account No:", f"Account No: {iban}")
+    _replace_one(doc, "Branch Code: ", f"Branch Code: {branch} ")
+    # Keep full 7-row grid (real format); fill 3 tasks, clear leftover sample rows.
     if doc.Tables.Count >= 2:
         table = doc.Tables(2)
         tasks = list(data.tasks[:3]) if data.tasks else []
@@ -345,36 +461,42 @@ def _fill_ecomify(doc, data: WordInvoiceData, invoice_date: date | None) -> None
             if table.Columns.Count >= 2:
                 _set_cell_text(table, row_1, 2, tasks[i].sub_task)
             if table.Columns.Count >= 5:
-                _set_cell_text(table, row_1, 5, _money(tasks[i].amount))
-        _delete_table_rows(table, [7, 6, 5, 4])
+                _set_cell_text(table, row_1, 5, _ecomify_money(tasks[i].amount))
+        for row_1 in range(len(tasks) + 1, table.Rows.Count + 1):
+            _clear_table_row_com(table, row_1)
     if doc.Tables.Count >= 3:
         summary = doc.Tables(3)
         if summary.Rows.Count >= 1:
             _set_cell_text(summary, 1, summary.Columns.Count, total)
         if summary.Rows.Count >= 2:
-            _set_cell_text(summary, 2, summary.Columns.Count, "$0")
+            _set_cell_text(summary, 2, summary.Columns.Count, zero)
         if summary.Rows.Count >= 3:
-            _set_cell_text(summary, 3, summary.Columns.Count, "$0")
+            _set_cell_text(summary, 3, summary.Columns.Count, zero)
         if summary.Rows.Count >= 4:
             _set_cell_text(summary, 4, summary.Columns.Count, total)
 
 
 def _fill_cozy(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
+    inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount)
+    if inv:
+        _replace_all(doc, "01234", inv)
+    _replace_all(doc, "11 . 02 . 2030", _short_date(invoice_date))
     if doc.Tables.Count >= 1:
         _delete_table_rows(doc.Tables(1), [7, 6, 5])
-    _replace_all(
+    replaced = _replace_all(
         doc,
         "Bank Name^lAccount Name: Daniel Gallego Account No.: 0123 4567 8901^lBranch Code: ",
         f"Bank Name: {bank}^lAccount Name: {name} Account No.: {iban}^lBranch Code: {branch} ",
     )
-    _replace_all(doc, "Account Name: Daniel Gallego", f"Account Name: {name}")
-    _replace_all(doc, "Daniel Gallego", name)
-    _replace_all(doc, "Account No.: 0123 4567 8901", f"Account No.: {iban}")
-    _replace_all(doc, "0123 4567 8901", iban)
-    _replace_all(doc, "Bank Name", f"Bank Name: {bank}")
-    _replace_all(doc, "Branch Code: ", f"Branch Code: {branch} ")
+    if not replaced:
+        _replace_all(doc, "Account Name: Daniel Gallego", f"Account Name: {name}")
+        _replace_all(doc, "Daniel Gallego", name)
+        _replace_all(doc, "Account No.: 0123 4567 8901", f"Account No.: {iban}")
+        _replace_all(doc, "0123 4567 8901", iban)
+        _fill_empty_label(doc, "Bank Name", bank)
+        _fill_empty_label(doc, "Branch Code", branch)
     names = [
         "Property Valuation & Pricing Strategy",
         "Professional Photography",
@@ -385,6 +507,86 @@ def _fill_cozy(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     )
     _replace_all(doc, "$2244", total)
     _replace_all(doc, "   $2244", f"   {total}")
+
+
+def _dynamo_slash_date(invoice_date: date | None) -> str:
+    """Header date style: 18 / 04 / 2025."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d} / {d.month:02d} / {d.year}"
+
+
+def _dynamo_pay_by_date(invoice_date: date | None) -> str:
+    """Pay by style: 18 April 2025."""
+    d = invoice_date or date.today()
+    return f"{d.day} {d.strftime('%B')} {d.year}"
+
+
+def _fill_dynamo(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
+    """Invoice05 — real Dynamo Creatives layout (Bank Name / Account Name / Account No)."""
+    inv = data.document_invoice_no or "DV-001"
+    bank, name, iban = data.bank or "", data.person_name or "", data.iban or ""
+    total = _money(data.total_amount)
+    slash = _dynamo_slash_date(invoice_date)
+    # Soft-break keeps Invoice# above Date in the narrow right column (avoids wrap bleed).
+    if not _replace_all(doc, "DV-001 18 / 04 / 2025", f"{inv}^l{slash}"):
+        if inv and inv != "DV-001":
+            _replace_all(doc, "DV-001", inv)
+        _replace_all(doc, "18 / 04 / 2025", slash)
+    if len(inv) > 6:
+        # Squeeze longer IDs so they stay on one line under Invoice#.
+        for story in _story_ranges(doc):
+            try:
+                found = story.Find.Execute(
+                    FindText=inv,
+                    MatchCase=True,
+                    MatchWholeWord=False,
+                    Forward=True,
+                    Wrap=0,
+                )
+            except Exception:
+                continue
+            if found:
+                try:
+                    story.Font.Spacing = -1.0
+                    story.Font.Scaling = 80
+                except Exception:
+                    pass
+                break
+    _replace_all(doc, "18 April 2025", _dynamo_pay_by_date(invoice_date))
+    # Real PDF stacks Bank Name then Account Name; keep soft-break between them.
+    replaced = _replace_all(
+        doc,
+        "Bank Name:Faisal Bank Account Name:Dynaverse",
+        f"Bank Name: {bank}^lAccount Name: {name}",
+    )
+    if not replaced:
+        replaced = _replace_all(
+            doc,
+            "Bank Name:Faisal Bank Account Name:Dynaverse",
+            f"Bank Name: {bank} Account Name: {name}",
+        )
+    if not replaced:
+        _replace_all(doc, "Faisal Bank", bank)
+        _replace_all(doc, "Dynaverse", name)
+    if not _replace_all(
+        doc,
+        "Account  No.:  PK52FAYS3059301000006776",
+        f"Account  No.:  {iban}",
+    ):
+        _replace_all(doc, "PK52FAYS3059301000006776", iban)
+    _fill_three_service_rows(
+        doc,
+        data,
+        sample_names=[
+            "Social Media Marketing Services",
+            "Content Writing",
+            "Website Development",
+        ],
+        sample_amounts=["$4,000", "$3,500", "$2,500"],
+        cents=False,
+    )
+    _replace_all(doc, "$10,000", total)
+    _replace_all(doc, "Total$10,000", f"Total{total}")
 
 
 def _fill_beecodify(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
@@ -404,11 +606,40 @@ def _fill_beecodify(doc, data: WordInvoiceData, invoice_date: date | None) -> No
     _fill_three_service_rows(
         doc,
         data,
-        sample_names=["Business Development", "Web Development", "Consultation"],
+        sample_names=["Consultation", "Web Development", "Business Development"],
         sample_amounts=["$5.00", "$30.00", "$5.00"],
         cents=True,
     )
     _replace_all(doc, "$95.00", total)
+
+
+def _bravix_date(invoice_date: date | None) -> str:
+    """Bravix template uses DD.MM.YYYY (e.g. 11.03.2030)."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d}.{d.month:02d}.{d.year}"
+
+
+def _fill_bravix_payment_lines(table, total_row: int, name: str, bank: str, iban: str, branch: str) -> None:
+    """Keep real layout: four stacked lines in the payment cell (not one wrapped line)."""
+    cell = table.Cell(total_row, 1)
+    filled = {
+        "account name": f"Account Name: {name}",
+        "bank name": f"Bank Name: {bank}",
+        "account no": f"Account No: {iban}",
+        "branch code": f"Branch Code: {branch}",
+    }
+    for i in range(1, cell.Range.Paragraphs.Count + 1):
+        para = cell.Range.Paragraphs(i)
+        rng = para.Range.Duplicate
+        rng.MoveEnd(1, -1)
+        raw = rng.Text.replace("\r", "").replace("\x07", "").strip()
+        if not raw:
+            continue
+        key = raw.lower().rstrip(":").strip()
+        for label, text in filled.items():
+            if key == label or key.startswith(label):
+                rng.Text = text
+                break
 
 
 def _fill_bravix(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
@@ -417,13 +648,13 @@ def _fill_bravix(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     total = _money(data.total_amount, cents=True)
     if inv:
         _replace_all(doc, "01234", inv)
-    _replace_all(doc, "11.03.2030", _short_date(invoice_date))
+    _replace_all(doc, "11.03.2030", _bravix_date(invoice_date))
     if doc.Tables.Count >= 1:
         _delete_table_rows(doc.Tables(1), [6, 5])
     _fill_three_service_rows(
         doc,
         data,
-        sample_names=["Business Development", "Web Development", "Consultation"],
+        sample_names=["Consultation", "Web Development", "Business Development"],
         sample_amounts=["$5.00", "$30.00", "$5.00"],
         cents=True,
     )
@@ -436,13 +667,14 @@ def _fill_bravix(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
             _set_cell_text(table, total_row, cols, total)
             if cols >= 5:
                 _set_cell_text(table, total_row, 5, total)
-            _set_cell_text(
-                table,
-                total_row,
-                1,
-                f"Account Name: {name} Bank Name: {bank} Account No: {iban} Branch Code: {branch}",
-            )
+            _fill_bravix_payment_lines(table, total_row, name, bank, iban, branch)
     _replace_all(doc, "$95.00", total)
+
+
+def _alpha_date(invoice_date: date | None) -> str:
+    """Alpha template date cell: 28/ 07 / 2095 → DD/ MM / YYYY."""
+    d = invoice_date or date.today()
+    return f"{d.day:02d}/ {d.month:02d} / {d.year}"
 
 
 def _fill_alpha(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
@@ -451,12 +683,18 @@ def _fill_alpha(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     total = _money(data.total_amount)
     if inv:
         _replace_all(doc, "52131", inv)
-    _replace_all(doc, "28/ 07 / 2095", _short_date(invoice_date))
-    _replace_all(doc, "Account Name: Daniel Gallego Account No.: 0123 4567 8901 Branch Code",
-                 f"Account Name: {name} Account No.: {iban} Branch Code: {branch}")
-    _replace_all(doc, "Daniel Gallego", name)
-    _replace_all(doc, "0123 4567 8901", iban)
-    _replace_all(doc, "Bank Name: ", f"Bank Name: {bank} ")
+    _replace_all(doc, "28/ 07 / 2095", _alpha_date(invoice_date))
+    # Real PDF stacks payment lines; keep Account/No/Branch on soft-break lines.
+    _replace_one(doc, "Bank Name: ", f"Bank Name: {bank} ")
+    replaced = _replace_all(
+        doc,
+        "Account Name: Daniel Gallego Account No.: 0123 4567 8901 Branch Code",
+        f"Account Name: {name}^lAccount No.: {iban}^lBranch Code: {branch}",
+    )
+    if not replaced:
+        _replace_all(doc, "Daniel Gallego", name)
+        _replace_all(doc, "0123 4567 8901", iban)
+        _replace_one(doc, "Branch Code", f"Branch Code: {branch}")
     _replace_all(doc, "$285", total)
     _replace_all(doc, "Total\t$285", f"Total\t{total}")
     if doc.Tables.Count >= 2:
@@ -497,6 +735,7 @@ def _fill_synergo(doc, data: WordInvoiceData, invoice_date: date | None) -> None
 
 def _com_fill_document(doc, data: WordInvoiceData, invoice_date: date | None) -> None:
     fillers = {
+        5: _fill_dynamo,
         6: _fill_ravotek,
         7: _fill_ignitai,
         8: _fill_coretechify,

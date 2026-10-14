@@ -787,7 +787,44 @@ def _update_template_4(doc: Document, data: WordInvoiceData) -> None:
 
 
 def _update_template_5(doc: Document, data: WordInvoiceData) -> None:
-    _apply_template_invoice_logic(doc, data, line_item_config(5))
+    """Invoice05 Dynamo Creatives — Bank Name / Account Name / Account No (no Branch/IBAN)."""
+    config = line_item_config(5)
+    bank = data.bank or ""
+    name = data.person_name or ""
+    iban = data.iban or ""
+    if data.document_invoice_no:
+        for paragraph in doc.paragraphs:
+            if "DV-001" in paragraph.text:
+                _replace_paragraph_text(
+                    paragraph,
+                    paragraph.text.replace("DV-001", data.document_invoice_no),
+                )
+                break
+    for paragraph in doc.paragraphs:
+        text = paragraph.text
+        if _is_layout_only_text(text):
+            continue
+        if "Bank Name" in text and "Account Name" in text:
+            _replace_paragraph_text(
+                paragraph,
+                f"Bank Name: {bank}\nAccount Name: {name}",
+            )
+        elif re.match(r"(?i)^\s*Account\s+No\.?\s*:", text.strip()):
+            _replace_paragraph_text(paragraph, f"Account  No.:  {iban}")
+    if len(doc.tables) > config.table_index:
+        table = doc.tables[config.table_index]
+        if data.tasks and len(data.tasks) >= 3:
+            _update_line_items(table, data.tasks[:3], config)
+        _update_subtotal_and_total(table, data.total_amount, config.amount_col)
+    amount_str = format_amount(data.total_amount)
+    for paragraph in doc.paragraphs:
+        lead, core, trail = _split_outer_whitespace(paragraph.text)
+        if core.lower().startswith("total") and ("$" in core or "\t" in core):
+            if "\t" in core:
+                _replace_paragraph_text(paragraph, f"{lead}Total\t{amount_str}{trail}")
+            else:
+                _replace_paragraph_text(paragraph, f"{lead}Total{amount_str}{trail}")
+            break
 
 
 def _update_template_6_ravotek(doc: Document, data: WordInvoiceData) -> None:
@@ -805,15 +842,25 @@ def _update_template_7_ignitai(doc: Document, data: WordInvoiceData) -> None:
         # Total Amount Due row
         if len(table.rows) > 8 and len(table.rows[8].cells) > 3:
             _set_cell_all_amounts(table.rows[8].cells[3], data.total_amount)
-    # Invoice number sits on the paragraph after "Invoice Number:"
+    # Real format embeds "Invoice:     000"; older copies used "Invoice Number:" + next para.
     if data.document_invoice_no:
-        for i, paragraph in enumerate(doc.paragraphs):
-            if paragraph.text.strip().lower().startswith("invoice number"):
-                if i + 1 < len(doc.paragraphs):
-                    _replace_paragraph_text(
-                        doc.paragraphs[i + 1], data.document_invoice_no
-                    )
+        inv = data.document_invoice_no
+        updated = False
+        for paragraph in _iter_all_paragraphs(doc):
+            text = paragraph.text
+            if re.search(r"(?i)Invoice:\s+000\b", text):
+                _replace_paragraph_text(
+                    paragraph,
+                    re.sub(r"(?i)(Invoice:\s*)000\b", rf"\g<1>{inv}", text, count=1),
+                )
+                updated = True
                 break
+        if not updated:
+            for i, paragraph in enumerate(doc.paragraphs):
+                if paragraph.text.strip().lower().startswith("invoice number"):
+                    if i + 1 < len(doc.paragraphs):
+                        _replace_paragraph_text(doc.paragraphs[i + 1], inv)
+                    break
 
 
 def _update_template_8_coretechify(doc: Document, data: WordInvoiceData) -> None:

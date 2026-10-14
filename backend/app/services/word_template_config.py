@@ -19,7 +19,8 @@ LINE_ITEM_CONFIGS: dict[int, LineItemConfig] = {
     2: LineItemConfig(table_index=1, line_item_rows=[5, 6, 7], desc_col=0, amount_col=2),
     3: LineItemConfig(table_index=1, line_item_rows=[1, 2, 3], desc_col=0, amount_col=1),
     4: LineItemConfig(table_index=2, line_item_rows=[1, 2, 3], desc_col=1, amount_col=3),
-    5: LineItemConfig(table_index=1, line_item_rows=[1, 2, 3], desc_col=0, amount_col=2),
+    # Real Dynamo template: single items table (Invoice#/Date are paragraphs, not a table).
+    5: LineItemConfig(table_index=0, line_item_rows=[1, 2, 3], desc_col=0, amount_col=2),
     # New company templates
     6: LineItemConfig(
         table_index=0,
