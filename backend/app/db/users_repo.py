@@ -9,7 +9,11 @@ from backend.app.db.connection import db_cursor
 from backend.app.services.password_utils import hash_password
 from backend.app.services.validation import ValidationError
 
-ALLOWED_ROLES = ("admin", "user")
+ALLOWED_ROLES = ("admin", "developer", "user")
+# Who may change roles at all (Team / users API).
+ROLE_GRANT_ROLES = ("admin", "developer")
+# Only Developer may assign the developer role (Admin cannot).
+DEVELOPER_ASSIGN_ROLES = ("developer",)
 
 
 def _public_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +82,27 @@ def list_users() -> list[dict[str, Any]]:
     return [_public_user(r) for r in rows]
 
 
+def assert_can_assign_role(
+    *,
+    actor_role: str,
+    new_role: str,
+    previous_role: str | None = None,
+) -> None:
+    """Admin/Developer may change roles; only Developer may assign developer."""
+    actor = str(actor_role or "").strip().lower()
+    target = str(new_role or "").strip().lower()
+    previous = str(previous_role or "").strip().lower() if previous_role is not None else None
+    if target not in ALLOWED_ROLES:
+        raise ValidationError(f"Role must be one of: {', '.join(ALLOWED_ROLES)}.")
+    if previous is not None and target == previous:
+        return
+    if actor not in ROLE_GRANT_ROLES:
+        raise ValidationError("Only Admin or Developer can change user roles.")
+    # Admin cannot grant or keep assigning developer via create/update to developer.
+    if target == "developer" and actor not in DEVELOPER_ASSIGN_ROLES:
+        raise ValidationError("Admin cannot assign the Developer role.")
+
+
 def create_user(
     *,
     username: str,
@@ -85,6 +110,7 @@ def create_user(
     password: str,
     role: str = "user",
     is_active: bool = True,
+    actor_role: str | None = None,
 ) -> dict[str, Any]:
     username = str(username or "").strip()
     email = str(email or "").strip().lower()
@@ -95,6 +121,8 @@ def create_user(
         raise ValidationError("A valid email is required.")
     if role not in ALLOWED_ROLES:
         raise ValidationError(f"Role must be one of: {', '.join(ALLOWED_ROLES)}.")
+    if actor_role is not None:
+        assert_can_assign_role(actor_role=actor_role, new_role=role, previous_role=None)
     if not password or len(password) < 8:
         raise ValidationError("Password must be at least 8 characters.")
 
@@ -119,10 +147,26 @@ def create_user(
 
     row = get_user_by_id(user_id)
     assert row is not None
-    return _public_user(row)
+    created = _public_user(row)
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="user.create",
+        resource_type="user",
+        resource_id=str(user_id),
+        table_name="users",
+        after={**created, "password_hash": row.get("password_hash")},
+    )
+    return created
 
 
-def update_user(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+def update_user(
+    user_id: int,
+    payload: dict[str, Any],
+    *,
+    actor_role: str | None = None,
+    actor_user_id: int | None = None,
+) -> dict[str, Any]:
     existing = get_user_by_id(user_id)
     if not existing:
         raise ValidationError(f"User {user_id} not found.")
@@ -139,6 +183,20 @@ def update_user(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValidationError("A valid email is required.")
     if role not in ALLOWED_ROLES:
         raise ValidationError(f"Role must be one of: {', '.join(ALLOWED_ROLES)}.")
+    if actor_role is not None:
+        assert_can_assign_role(
+            actor_role=actor_role,
+            new_role=role,
+            previous_role=str(existing.get("role") or ""),
+        )
+    # Plain users must never elevate themselves.
+    if (
+        actor_user_id is not None
+        and int(actor_user_id) == int(user_id)
+        and str(actor_role or "").lower() not in ROLE_GRANT_ROLES
+        and role != str(existing.get("role") or "").lower()
+    ):
+        raise ValidationError("You cannot change your own role.")
 
     try:
         with db_cursor(commit=True) as cur:
@@ -160,26 +218,60 @@ def update_user(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
 
     row = get_user_by_id(user_id)
     assert row is not None
-    return _public_user(row)
+    updated = _public_user(row)
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="user.update",
+        resource_type="user",
+        resource_id=str(user_id),
+        table_name="users",
+        before=_public_user(existing),
+        after=updated,
+    )
+    return updated
 
 
 def set_user_password(user_id: int, password: str) -> None:
     if not password or len(password) < 8:
         raise ValidationError("Password must be at least 8 characters.")
-    if not get_user_by_id(user_id):
+    existing = get_user_by_id(user_id)
+    if not existing:
         raise ValidationError(f"User {user_id} not found.")
+    new_hash = hash_password(password)
     with db_cursor(commit=True) as cur:
         cur.execute(
             "UPDATE users SET password_hash = %s WHERE id = %s",
-            (hash_password(password), user_id),
+            (new_hash, user_id),
         )
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="user.password_change",
+        resource_type="user",
+        resource_id=str(user_id),
+        table_name="users",
+        before={"password_hash": existing.get("password_hash")},
+        after={"password_hash": new_hash, "username": existing.get("username")},
+        meta={"note": "Plaintext passwords are never stored; hash updated."},
+    )
 
 
 def delete_user(user_id: int) -> dict[str, Any]:
-    if not get_user_by_id(user_id):
+    existing = get_user_by_id(user_id)
+    if not existing:
         raise ValidationError(f"User {user_id} not found.")
     with db_cursor(commit=True) as cur:
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="user.delete",
+        resource_type="user",
+        resource_id=str(user_id),
+        table_name="users",
+        before=_public_user(existing),
+    )
     return {"id": user_id, "deleted": True}
 
 

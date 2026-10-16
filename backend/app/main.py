@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import date
 from pathlib import Path
 
@@ -7,8 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.app.auth_deps import OptionalUser, RequireAdmin, RequireUser
+from backend.app.auth_deps import (
+    OptionalUser,
+    RequireAdminOrDeveloper,
+    RequireUser,
+    user_role,
+)
 from backend.app.db import run_migrations
 from backend.app.db.clubing_repo import list_clubs
 from backend.app.db.employees_repo import (
@@ -28,10 +35,12 @@ from backend.app.db.users_repo import (
     set_user_password,
     update_user,
 )
+from backend.app.developer_routes import router as developer_router
 from backend.app.services.auth_service import (
     SESSION_COOKIE,
     authenticate_login,
     ensure_initial_admin,
+    ensure_initial_developer,
 )
 from backend.app.services.category_tasks import categories_status
 from backend.app.services.employee_invoice_generate import generate_invoices_for_employees
@@ -81,6 +90,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+class _DeveloperObservabilityMiddleware(BaseHTTPMiddleware):
+    """Attach actor context for tracing + capture API request metadata."""
+
+    async def dispatch(self, request: Request, call_next):
+        from backend.app.services.activity_trace import (
+            clear_request_context,
+            set_request_context,
+            trace,
+        )
+        from backend.app.services.auth_service import SESSION_COOKIE
+
+        path = request.url.path or ""
+        ip = request.client.host if request.client else None
+        ua = request.headers.get("user-agent")
+        actor = None
+        try:
+            session_id = request.cookies.get(SESSION_COOKIE)
+            if session_id:
+                from backend.app.auth_deps import _load_user_from_session
+
+                actor = _load_user_from_session(session_id)
+            set_request_context(actor=actor, ip_address=ip, user_agent=ua)
+        except Exception:
+            clear_request_context()
+
+        if not path.startswith("/api/") or path in {"/api/health"}:
+            try:
+                return await call_next(request)
+            finally:
+                clear_request_context()
+
+        started = time.perf_counter()
+        status_code = 500
+        error_detail = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            # High-level mutate trace (employees/users/invoices already detailed in repos).
+            if (
+                request.method in {"POST", "PUT", "PATCH", "DELETE"}
+                and status_code < 400
+                and not path.startswith("/api/developer/")
+                and path not in {"/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+            ):
+                trace(
+                    action=f"api.{request.method.lower()}",
+                    resource_type="api",
+                    resource_id=path,
+                    meta={"status_code": status_code},
+                )
+            return response
+        except Exception as e:
+            error_detail = str(e)[:500]
+            raise
+        finally:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            try:
+                from backend.app.db import api_logs_repo, feature_flags_repo
+
+                if feature_flags_repo.is_enabled("developer_api_logging", default=True):
+                    api_logs_repo.record_request(
+                        method=request.method,
+                        path=path,
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                        user_id=int(actor["id"]) if actor and actor.get("id") else None,
+                        username=(actor or {}).get("username"),
+                        ip_address=ip,
+                        error_detail=error_detail,
+                    )
+            except Exception:
+                pass
+            clear_request_context()
+
+
+app.add_middleware(_DeveloperObservabilityMiddleware)
+
+app.include_router(developer_router)
+
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
@@ -90,6 +179,7 @@ def _startup() -> None:
     try:
         run_migrations()
         ensure_initial_admin()
+        ensure_initial_developer()
     except ValidationError as e:
         print(f"[startup] warning: {e}")
     except Exception as e:  # pragma: no cover - surface DB/config issues
@@ -209,6 +299,8 @@ async def auth_login(body: LoginRequest, request: Request):
             body.identifier,
             body.password,
             client_key=f"{client}:{body.identifier.strip().lower()}",
+            ip_address=client if client != "unknown" else None,
+            user_agent=request.headers.get("user-agent"),
         )
     except ValidationError as e:
         raise _http_error(e) from e
@@ -218,10 +310,21 @@ async def auth_login(body: LoginRequest, request: Request):
 
 
 @app.post("/api/auth/logout")
-async def auth_logout(response: Response, request: Request, _user: OptionalUser):
+async def auth_logout(response: Response, request: Request, user: OptionalUser):
     session_id = request.cookies.get(SESSION_COOKIE)
     if session_id:
         delete_session(session_id)
+    if user:
+        from backend.app.services.activity_trace import trace
+
+        trace(
+            action="auth.logout",
+            resource_type="session",
+            resource_id=str(user.get("id")),
+            table_name="auth_sessions",
+            after={"username": user.get("username")},
+            actor=user,
+        )
     _clear_session_cookie(response)
     return {"ok": True}
 
@@ -233,16 +336,16 @@ async def auth_me(user: OptionalUser):
     return {"authenticated": True, "user": user}
 
 
-# ---------- admin users ----------
+# ---------- admin / developer users ----------
 
 
 @app.get("/api/users")
-async def users_list(_admin: RequireAdmin):
+async def users_list(_actor: RequireAdminOrDeveloper):
     return {"users": list_users()}
 
 
 @app.post("/api/users")
-async def users_create(body: UserCreate, _admin: RequireAdmin):
+async def users_create(body: UserCreate, actor: RequireAdminOrDeveloper):
     if body.password != body.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match.")
     try:
@@ -252,23 +355,29 @@ async def users_create(body: UserCreate, _admin: RequireAdmin):
             password=body.password,
             role=body.role,
             is_active=body.is_active,
+            actor_role=user_role(actor),
         )
     except ValidationError as e:
         raise _http_error(e) from e
 
 
 @app.put("/api/users/{user_id}")
-async def users_update(user_id: int, body: UserUpdate, _admin: RequireAdmin):
+async def users_update(user_id: int, body: UserUpdate, actor: RequireAdminOrDeveloper):
     try:
         payload = {k: v for k, v in body.model_dump().items() if v is not None}
-        return update_user(user_id, payload)
+        return update_user(
+            user_id,
+            payload,
+            actor_role=user_role(actor),
+            actor_user_id=int(actor["id"]),
+        )
     except ValidationError as e:
         raise _http_error(e) from e
 
 
 @app.post("/api/users/{user_id}/password")
 async def users_set_password(
-    user_id: int, body: PasswordResetRequest, _admin: RequireAdmin
+    user_id: int, body: PasswordResetRequest, _actor: RequireAdminOrDeveloper
 ):
     if body.password != body.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match.")
@@ -280,7 +389,7 @@ async def users_set_password(
 
 
 @app.delete("/api/users/{user_id}")
-async def users_delete(user_id: int, _admin: RequireAdmin):
+async def users_delete(user_id: int, _actor: RequireAdminOrDeveloper):
     try:
         return delete_user(user_id)
     except ValidationError as e:

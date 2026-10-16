@@ -40,18 +40,22 @@ export interface SessionUser {
   roleLabel: string
   username: string
   isAdmin: boolean
+  isDeveloper: boolean
 }
 
 export function mapApiUser(user: ApiUser): SessionUser {
-  const role: UserRole = user.role === 'admin' ? 'admin' : 'user'
+  const raw = String(user.role || '').toLowerCase()
+  const role: UserRole =
+    raw === 'admin' ? 'admin' : raw === 'developer' ? 'developer' : 'user'
   return {
     id: user.id,
     name: user.username,
     username: user.username,
     email: user.email,
     role,
-    roleLabel: role === 'admin' ? 'Admin' : 'User',
+    roleLabel: role === 'admin' ? 'Admin' : role === 'developer' ? 'Developer' : 'User',
     isAdmin: role === 'admin',
+    isDeveloper: role === 'developer',
   }
 }
 

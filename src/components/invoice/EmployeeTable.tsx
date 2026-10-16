@@ -130,6 +130,8 @@ export function EmployeeTable({
                     <select
                       aria-label={`Invoice template for ${employee.accountTitle}`}
                       value={employee.invoiceTemplate}
+                      spellCheck={false}
+                      autoComplete="off"
                       onChange={(event) => onTemplateChange(employee.id, Number(event.target.value))}
                     >
                       {templates.map((template) => (

@@ -15,9 +15,16 @@ import { PlusIcon } from '../components/icons'
 
 type FormMode = 'create' | 'edit' | 'password' | null
 
-const ROLE_OPTIONS = [
+const ADMIN_ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: 'user', label: 'User' },
   { value: 'admin', label: 'Admin' },
+]
+
+/** Only Developers may assign the Developer role. */
+const DEVELOPER_ROLE_OPTIONS: { value: UserRole; label: string }[] = [
+  { value: 'user', label: 'User' },
+  { value: 'admin', label: 'Admin' },
+  { value: 'developer', label: 'Developer' },
 ]
 
 export function TeamPage() {
@@ -55,9 +62,13 @@ export function TeamPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const canManageTeam = Boolean(user?.isAdmin || user?.isDeveloper)
+  // Admin cannot assign Developer — that option is Developer-only.
+  const roleOptions = user?.isDeveloper ? DEVELOPER_ROLE_OPTIONS : ADMIN_ROLE_OPTIONS
+
   useEffect(() => {
-    if (user?.isAdmin) void refresh()
-  }, [user, refresh])
+    if (canManageTeam) void refresh()
+  }, [canManageTeam, refresh])
 
   if (bootstrapping) {
     return (
@@ -71,7 +82,7 @@ export function TeamPage() {
   }
 
   if (!user) return <Navigate to="/signin" replace />
-  if (!user.isAdmin) return <Navigate to="/" replace />
+  if (!canManageTeam) return <Navigate to="/" replace />
 
   const openCreate = () => {
     setEditing(null)
@@ -89,7 +100,17 @@ export function TeamPage() {
     setEditing(row)
     setUsername(row.username)
     setEmail(row.email)
-    setRole(row.role === 'admin' ? 'admin' : 'user')
+    // Admin UI has no Developer option — keep current developer as-is only for Developer actors.
+    if (row.role === 'developer' && user?.isDeveloper) {
+      setRole('developer')
+    } else if (row.role === 'admin') {
+      setRole('admin')
+    } else if (row.role === 'developer') {
+      // Admin editing a developer: default to admin so they don't silently keep developer via stale state
+      setRole('admin')
+    } else {
+      setRole('user')
+    }
     setIsActive(row.is_active)
     setFormError('')
     setMode('edit')
@@ -118,6 +139,12 @@ export function TeamPage() {
       if (mode === 'create') {
         if (password.length < 8) throw new Error('Password must be at least 8 characters.')
         if (password !== confirmPassword) throw new Error('Passwords do not match.')
+        if (!roleOptions.some((o) => o.value === role)) {
+          throw new Error('Select a valid role.')
+        }
+        if (role === 'developer' && !user?.isDeveloper) {
+          throw new Error('Admin cannot assign the Developer role.')
+        }
         await teamUsers.create({
           username: username.trim(),
           email: email.trim(),
@@ -128,6 +155,12 @@ export function TeamPage() {
         })
         notify.showSuccess('Team login created.')
       } else if (mode === 'edit' && editing) {
+        if (!roleOptions.some((o) => o.value === role)) {
+          throw new Error('Select a valid role.')
+        }
+        if (role === 'developer' && !user?.isDeveloper) {
+          throw new Error('Admin cannot assign the Developer role.')
+        }
         await teamUsers.update(editing.id, {
           username: username.trim(),
           email: email.trim(),
@@ -210,8 +243,12 @@ export function TeamPage() {
                   <article key={row.id} className="team-card">
                     <header>
                       <strong>{row.username}</strong>
-                      <span className={`role-pill ${row.role === 'admin' ? 'is-admin' : ''}`}>
-                        {row.role === 'admin' ? 'Admin' : 'User'}
+                      <span
+                        className={`role-pill ${
+                          row.role === 'admin' ? 'is-admin' : row.role === 'developer' ? 'is-dev' : ''
+                        }`}
+                      >
+                        {row.role === 'admin' ? 'Admin' : row.role === 'developer' ? 'Developer' : 'User'}
                       </span>
                     </header>
                     <p>{row.email}</p>
@@ -248,7 +285,13 @@ export function TeamPage() {
                       <tr key={row.id}>
                         <td>{row.username}</td>
                         <td>{row.email}</td>
-                        <td>{row.role === 'admin' ? 'Admin' : 'User'}</td>
+                        <td>
+                          {row.role === 'admin'
+                            ? 'Admin'
+                            : row.role === 'developer'
+                              ? 'Developer'
+                              : 'User'}
+                        </td>
                         <td>{row.is_active ? 'Active' : 'Inactive'}</td>
                         <td>{row.last_login || '—'}</td>
                         <td className="col-action">
@@ -291,7 +334,7 @@ export function TeamPage() {
                 <SelectField
                   label="Role"
                   value={role}
-                  options={ROLE_OPTIONS}
+                  options={roleOptions}
                   onChange={(e) => setRole(e.target.value as UserRole)}
                 />
                 <label className="field field-check">

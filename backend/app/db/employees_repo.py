@@ -131,7 +131,17 @@ def create_employee(payload: dict[str, Any]) -> dict:
         raise ValidationError(
             f"Employee ID {employee_id!r} already exists."
         ) from e
-    return get_employee(employee_id)
+    created = get_employee(employee_id)
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="employee.create",
+        resource_type="employee",
+        resource_id=employee_id,
+        table_name="employees",
+        after=created,
+    )
+    return created
 
 
 def update_employee(employee_id: str, payload: dict[str, Any]) -> dict:
@@ -179,12 +189,23 @@ def update_employee(employee_id: str, payload: dict[str, Any]) -> dict:
             raise ValidationError(
                 f"Employee {employee_id!r} not found or is inactive."
             )
-    return get_employee(employee_id)
+    updated = get_employee(employee_id)
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="employee.update",
+        resource_type="employee",
+        resource_id=employee_id,
+        table_name="employees",
+        before=existing,
+        after=updated,
+    )
+    return updated
 
 
 def delete_employee(employee_id: str) -> dict:
     """Permanently remove employee and their invoice_backup history (FK RESTRICT)."""
-    get_employee(employee_id)
+    existing = get_employee(employee_id)
     with db_cursor(commit=True) as cur:
         cur.execute(
             "DELETE FROM invoice_backup WHERE employee_id = %s",
@@ -196,6 +217,15 @@ def delete_employee(employee_id: str) -> dict:
         )
         if cur.rowcount == 0:
             raise ValidationError(f"Employee {employee_id!r} not found.")
+    from backend.app.services.activity_trace import trace
+
+    trace(
+        action="employee.delete",
+        resource_type="employee",
+        resource_id=employee_id,
+        table_name="employees",
+        before=existing,
+    )
     return {"employee_id": employee_id, "deleted": True}
 
 

@@ -805,15 +805,111 @@ tbody tr.is-selected { background: var(--row); }
   background: transparent;
   height: 44px;
 }
-.field-select { position: relative; }
-.field-select select { appearance: none; padding-right: 24px; }
-.select-chevron {
+.field-select-wrap {
+  position: relative;
+}
+.field-select-native {
   position: absolute;
-  right: 12px;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.field-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  padding: 0 12px;
+}
+.field-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.field-select-trigger.is-open {
+  border-color: var(--accent);
+}
+.field-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.field-select-menu {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  max-height: 240px;
+  overflow: auto;
+}
+.field-select-option {
+  width: 100%;
+  display: block;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.field-select-option:hover {
+  background: var(--surface-2);
+}
+.field-select-option.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+.select-chevron {
   width: 16px;
   height: 16px;
   color: var(--muted);
-  pointer-events: none;
+  flex: none;
+  transition: transform 0.15s ease;
+}
+.select-chevron.is-open {
+  transform: rotate(180deg);
+}
+/* Legacy native selects (e.g. invoice template inline) */
+.field-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.field-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 36px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.field-select select:disabled {
+  cursor: not-allowed;
+  opacity: 0.75;
 }
 .field-icon, .field-prefix { color: var(--muted); display: inline-flex; }
 .field-icon svg { width: 16px; height: 16px; }
@@ -1240,4 +1336,96 @@ tbody tr.is-selected { background: var(--row); }
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* Developer Panel */
+.btn-danger {
+  background: color-mix(in srgb, var(--danger) 88%, #000);
+  color: #fff;
+  border: 0;
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+}
+.role-pill.is-dev {
+  background: color-mix(in srgb, #0d9488 18%, var(--surface));
+  color: #0f766e;
+}
+.developer-page .dev-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+.dev-tab {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.dev-tab.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-color: transparent;
+}
+.dev-db-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+.dev-db-toolbar .field {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+}
+.dev-db-toolbar select {
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--input);
+  color: var(--text);
+  padding: 0 12px;
+}
+.dev-cell {
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 220px;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dev-pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+.dev-json {
+  margin: 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  overflow: auto;
+  max-height: 60vh;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dev-cell-hash {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 280px;
 }

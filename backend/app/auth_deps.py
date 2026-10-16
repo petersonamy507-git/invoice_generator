@@ -51,6 +51,26 @@ def require_role(*roles: str):
     return _dep
 
 
+def user_role(user: dict[str, Any] | None) -> str:
+    return str((user or {}).get("role") or "").strip().lower()
+
+
+def is_admin(user: dict[str, Any] | None) -> bool:
+    return user_role(user) == "admin"
+
+
+def is_developer(user: dict[str, Any] | None) -> bool:
+    return user_role(user) == "developer"
+
+
+def is_admin_or_developer(user: dict[str, Any] | None) -> bool:
+    return user_role(user) in {"admin", "developer"}
+
+
 RequireUser = Annotated[dict[str, Any], Depends(require_user)]
 RequireAdmin = Annotated[dict[str, Any], Depends(require_role("admin"))]
+RequireDeveloper = Annotated[dict[str, Any], Depends(require_role("developer"))]
+RequireAdminOrDeveloper = Annotated[
+    dict[str, Any], Depends(require_role("admin", "developer"))
+]
 OptionalUser = Annotated[dict[str, Any] | None, Depends(get_optional_user)]

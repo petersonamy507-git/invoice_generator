@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext'
 import { PayrollProvider } from './context/PayrollContext'
 import { ThemeProvider } from './context/ThemeContext'
 import { AuthPage } from './pages/AuthPage'
+import { DeveloperPage } from './pages/DeveloperPage'
 import { InvoicePage } from './pages/InvoicePage'
 import { TeamPage } from './pages/TeamPage'
 
@@ -16,6 +17,7 @@ export default function App() {
             <Route path="/signup" element={<Navigate to="/signin" replace />} />
             <Route path="/" element={<InvoicePage />} />
             <Route path="/team" element={<TeamPage />} />
+            <Route path="/developer" element={<DeveloperPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </PayrollProvider>

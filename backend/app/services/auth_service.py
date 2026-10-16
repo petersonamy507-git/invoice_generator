@@ -51,7 +51,14 @@ class LoginRateLimiter:
 login_rate_limiter = LoginRateLimiter()
 
 
-def authenticate_login(identifier: str, password: str, *, client_key: str) -> tuple[dict, str]:
+def authenticate_login(
+    identifier: str,
+    password: str,
+    *,
+    client_key: str,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> tuple[dict, str]:
     login_rate_limiter.check(client_key)
     user = find_user_by_identifier(identifier)
     if not user or not verify_password(password, user["password_hash"]):
@@ -61,9 +68,28 @@ def authenticate_login(identifier: str, password: str, *, client_key: str) -> tu
         login_rate_limiter.hit(client_key)
         raise ValidationError(LOGIN_FAIL_MESSAGE)
 
-    session_id = sessions_repo.create_session(int(user["id"]))
+    session_id = sessions_repo.create_session(
+        int(user["id"]),
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
     touch_last_login(int(user["id"]))
-    return public_user_from_row(user), session_id
+    public = public_user_from_row(user)
+    try:
+        from backend.app.services.activity_trace import set_request_context, trace
+
+        set_request_context(actor=public, ip_address=ip_address, user_agent=user_agent)
+        trace(
+            action="auth.login",
+            resource_type="session",
+            resource_id=str(public["id"]),
+            table_name="auth_sessions",
+            after={"username": public.get("username"), "role": public.get("role")},
+            actor=public,
+        )
+    except Exception:
+        pass
+    return public, session_id
 
 
 def ensure_initial_admin() -> None:
@@ -81,4 +107,29 @@ def ensure_initial_admin() -> None:
         password=password,
         role="admin",
         is_active=True,
+    )
+
+
+def ensure_initial_developer() -> None:
+    """Seed a developer login when none exists (needed before Admin can open Dev Panel)."""
+    username = os.getenv("INITIAL_DEVELOPER_USERNAME", "").strip()
+    email = os.getenv("INITIAL_DEVELOPER_EMAIL", "").strip()
+    password = os.getenv("INITIAL_DEVELOPER_PASSWORD", "").strip()
+    if not username or not email or not password:
+        return
+    existing = find_user_by_identifier(username) or find_user_by_identifier(email)
+    if existing:
+        # Ensure role stays developer if this seed account already exists as another role.
+        if str(existing.get("role") or "").lower() != "developer":
+            from backend.app.db.users_repo import update_user
+
+            update_user(int(existing["id"]), role="developer", actor_role="developer")
+        return
+    create_user(
+        username=username,
+        email=email,
+        password=password,
+        role="developer",
+        is_active=True,
+        actor_role=None,
     )

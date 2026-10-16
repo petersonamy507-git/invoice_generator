@@ -190,7 +190,7 @@ export function InvoicePage() {
                   aria-label="Search employees"
                 />
               </label>
-              {user.isAdmin ? (
+              {user.isAdmin || user.isDeveloper ? (
                 <Button className="add-employee-btn" icon={<PlusIcon />} onClick={() => setEditor('create')}>
                   <span className="label-full">Add employee</span>
                   <span className="label-short">Add</span>
@@ -204,7 +204,7 @@ export function InvoicePage() {
             <EmployeeTable
               employees={visible}
               templates={payroll.templates}
-              canManage={user.isAdmin}
+              canManage={user.isAdmin || user.isDeveloper}
               onToggle={payroll.toggleSelected}
               onToggleAll={(checked) => payroll.setSelected(visible.map((employee) => employee.id), checked)}
               onInvoiceChange={(id, invoiceNo) => payroll.patchEmployee(id, { invoiceNo })}
@@ -243,7 +243,7 @@ export function InvoicePage() {
         </div>
       </div>
 
-      {editor && user.isAdmin ? (
+      {editor && (user.isAdmin || user.isDeveloper) ? (
         <EmployeeFormModal
           key={editor === 'create' ? 'create' : editor.id}
           mode={editor === 'create' ? 'create' : 'edit'}

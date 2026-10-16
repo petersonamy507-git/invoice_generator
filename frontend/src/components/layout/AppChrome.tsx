@@ -29,9 +29,14 @@ export function AppHeader() {
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'is-active' : undefined)}>
             Invoices
           </NavLink>
-          {user.isAdmin ? (
+          {user.isAdmin || user.isDeveloper ? (
             <NavLink to="/team" className={({ isActive }) => (isActive ? 'is-active' : undefined)}>
               Team
+            </NavLink>
+          ) : null}
+          {user.isDeveloper ? (
+            <NavLink to="/developer" className={({ isActive }) => (isActive ? 'is-active' : undefined)}>
+              Developer
             </NavLink>
           ) : null}
         </nav>
