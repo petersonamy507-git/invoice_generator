@@ -255,10 +255,8 @@ export function DeveloperPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const writableColumns = useMemo(
-    () => columns.filter((c) => !pk.includes(c.name)),
-    [columns, pk],
-  )
+  // Developers may edit every column, including primary keys (e.g. employees.employee_id).
+  const writableColumns = useMemo(() => columns, [columns])
 
   if (bootstrapping) {
     return (
@@ -792,7 +790,6 @@ export function DeveloperPage() {
           <div className="form-grid">
             {(editorMode === 'create' ? columns : writableColumns).map((c) => {
               const label = `${c.name}${pk.includes(c.name) ? ' (PK)' : ''}`
-              const disabled = editorMode === 'edit' && pk.includes(c.name)
               if (isBoolColumn(c.name)) {
                 return (
                   <SelectField
@@ -800,7 +797,6 @@ export function DeveloperPage() {
                     label={label}
                     value={asBool(editorRow[c.name]) ? '1' : '0'}
                     options={BOOL_OPTIONS}
-                    disabled={disabled}
                     onChange={(e) =>
                       setEditorRow((prev) => ({ ...prev, [c.name]: e.target.value === '1' ? 1 : 0 }))
                     }
@@ -814,7 +810,6 @@ export function DeveloperPage() {
                     label={`${label} — new password (leave blank to keep)`}
                     type="password"
                     value={editorTextValue(c.name, editorRow[c.name])}
-                    disabled={disabled}
                     onChange={(e) => setEditorRow((prev) => ({ ...prev, [c.name]: e.target.value }))}
                   />
                 )
@@ -824,7 +819,6 @@ export function DeveloperPage() {
                   key={c.name}
                   label={label}
                   value={editorTextValue(c.name, editorRow[c.name])}
-                  disabled={disabled}
                   onChange={(e) => setEditorRow((prev) => ({ ...prev, [c.name]: e.target.value }))}
                 />
               )

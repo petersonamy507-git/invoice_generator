@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pymysql
+
 from backend.app.db.connection import db_config, db_cursor
 from backend.app.services.developer_security import (
     assert_safe_identifier,
@@ -295,11 +297,12 @@ def create_row(table: str, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_row(table: str, pk_values: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    """Update a row. Developers may change any column, including primary key values."""
     name = ensure_app_table(table)
     pk = _primary_key(name)
     before = get_row(name, pk_values, reveal_secrets=True)["row"]
     meta = describe_table(name)
-    allowed = {c["name"] for c in meta["columns"]} - set(pk)
+    allowed = {c["name"] for c in meta["columns"]}
     cleaned: dict[str, Any] = {}
     for k, v in (data or {}).items():
         col = "password_hash" if name == "users" and k == "password" else k
@@ -311,9 +314,16 @@ def update_row(table: str, pk_values: dict[str, Any], data: dict[str, Any]) -> d
     sets = ", ".join(f"`{c}` = %s" for c in cleaned)
     where = " AND ".join(f"`{c}` = %s" for c in pk)
     params = [*[cleaned[c] for c in cleaned], *[_pk_value(pk_values, c) for c in pk]]
-    with db_cursor(commit=True) as cur:
-        cur.execute(f"UPDATE `{name}` SET {sets} WHERE {where}", params)
-    after = get_row(name, pk_values, reveal_secrets=True)
+    try:
+        with db_cursor(commit=True) as cur:
+            cur.execute(f"UPDATE `{name}` SET {sets} WHERE {where}", params)
+    except pymysql.err.IntegrityError as e:
+        raise ValidationError(f"Could not update row: {e}") from e
+    # If PK was renamed, fetch by the new key values.
+    lookup_pk = {
+        c: cleaned[c] if c in cleaned else _pk_value(pk_values, c) for c in pk
+    }
+    after = get_row(name, lookup_pk, reveal_secrets=True)
     after["before"] = before
     return after
 

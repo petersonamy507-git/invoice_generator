@@ -859,6 +859,72 @@ def _bravix_date(invoice_date: date | None) -> str:
     return f"{d.day:02d}.{d.month:02d}.{d.year}"
 
 
+def _fix_bravix_invoice_title(root: etree._Element) -> None:
+    """Stop large title reading as 'INVOIC' — textbox was too narrow / final E spacing off."""
+    min_cx = 340 * 12700  # 340pt in EMUs
+    # Widen DrawingML textboxes that contain the word INVOICE.
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "extent":
+            n = el
+            while n is not None and not (
+                isinstance(n.tag, str)
+                and (n.tag.endswith("}anchor") or n.tag.endswith("}inline"))
+            ):
+                n = n.getparent()
+            if n is None:
+                continue
+            texts = "".join(
+                (t.text or "")
+                for t in n.iter()
+                if isinstance(t.tag, str) and t.tag.endswith("}t")
+            )
+            if "INVOICE" not in texts:
+                continue
+            try:
+                cx = int(el.get("cx") or "0")
+            except ValueError:
+                cx = 0
+            if cx < min_cx:
+                el.set("cx", str(min_cx))
+        elif tag == "shape":
+            style_key = None
+            style = None
+            for k, v in el.attrib.items():
+                if k == "style" or k.endswith("}style"):
+                    style_key, style = k, v
+                    break
+            if not style or "width:" not in style:
+                continue
+            texts = "".join(
+                (t.text or "")
+                for t in el.iter()
+                if isinstance(t.tag, str) and t.tag.endswith("}t")
+            )
+            if "INVOICE" not in texts:
+                continue
+            el.set(
+                style_key,
+                re.sub(r"width:\s*[\d.]+pt", "width:340pt", style),
+            )
+    # Keep letter-spacing consistent on the giant title runs (was clipping the last E).
+    val_attr = f"{{{W_NS}}}val"
+    for t_el in root.iter(_q("t")):
+        if (t_el.text or "") not in list("INVOICE"):
+            continue
+        r = t_el.getparent()
+        if r is None:
+            continue
+        sz = r.find(f"{_q('rPr')}/{_q('sz')}")
+        if sz is None or sz.get(val_attr) != "133":
+            continue
+        spacing = r.find(f"{_q('rPr')}/{_q('spacing')}")
+        if spacing is not None and spacing.get(val_attr) != "-103":
+            spacing.set(val_attr, "-103")
+
+
 def _fill_bravix_payment_lines(
     tbl: etree._Element,
     row_0: int,
@@ -893,6 +959,7 @@ def _fill_bravix_payment_lines(
 
 
 def _fill_bravix(root: etree._Element, data: WordInvoiceData, invoice_date: date | None) -> None:
+    _fix_bravix_invoice_title(root)
     inv = data.document_invoice_no or ""
     bank, name, iban, branch = data.bank or "", data.person_name or "", data.iban or "", data.branch_code or ""
     total = _money(data.total_amount, cents=True)
